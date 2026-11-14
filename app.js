@@ -1,10 +1,11 @@
 const API = 'https://api.github.com/graphql';
 const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=repo,project&description=Board%20PWA';
-const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastEpic: 'pb.lastEpic' };
+const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastEpic: 'pb.lastEpic', grouped: 'pb.grouped' };
 const OPTION_COLORS = { GRAY: '#8b949e', BLUE: '#2f81f7', GREEN: '#2ea043', YELLOW: '#d29922', ORANGE: '#db6d28', RED: '#f85149', PINK: '#db61a2', PURPLE: '#a371f7' };
 const NO_EPIC = 'none';
 const SWIPE_TRIGGER = 88;
 const PULL_TRIGGER = 70;
+const LONG_PRESS_MS = 380;
 
 const store = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -17,6 +18,8 @@ let project = store.get(LS.project);
 let data = store.get(LS.cache);
 let tab = store.get(LS.tab);
 let collapsed = new Set(store.get(LS.collapsed, []));
+let grouped = store.get(LS.grouped, true);
+let drag = null;
 let loading = false;
 let lastLoad = 0;
 let renderedTab = null;
@@ -148,19 +151,37 @@ function render() {
     renderedTab = tab;
   }
 
+  const groupBtn = $('#groupBtn');
+  groupBtn.hidden = false;
+  groupBtn.textContent = grouped ? '⊞' : '☰';
+  groupBtn.classList.toggle('off', !grouped);
+  groupBtn.setAttribute('aria-label', grouped ? 'Выключить группировку по эпикам' : 'Включить группировку по эпикам');
+
   const inTab = data.items.filter(i => i.status === tab);
-  const groups = [...data.epics.map(e => ({ key: e.id, title: e.title })), { key: NO_EPIC, title: 'Без эпика' }];
-  const sections = groups.map(g => {
-    const its = inTab.filter(i => epicKey(i) === g.key);
-    if (!its.length) return null;
-    const isCollapsed = collapsed.has(g.key);
-    return h('section', { class: 'group' + (isCollapsed ? ' collapsed' : '') },
-      h('button', { class: 'group-head', onclick: () => toggleGroup(g.key) },
-        h('span', { class: 'chev', text: '›' }), h('span', { class: 'gt', text: g.title }), h('span', { class: 'n', text: its.length })),
-      isCollapsed ? null : h('div', { class: 'rows' }, its.map(rowEl)));
-  }).filter(Boolean);
+  let sections;
+  if (grouped) {
+    const groups = [...data.epics.map(e => ({ key: e.id, title: e.title })), { key: NO_EPIC, title: 'Без эпика' }];
+    sections = groups.map(g => {
+      const its = inTab.filter(i => epicKey(i) === g.key);
+      if (!its.length) return null;
+      const isCollapsed = collapsed.has(g.key);
+      return h('section', { class: 'group' + (isCollapsed ? ' collapsed' : '') },
+        h('button', { class: 'group-head', onclick: () => toggleGroup(g.key) },
+          h('span', { class: 'chev', text: '›' }), h('span', { class: 'gt', text: g.title }), h('span', { class: 'n', text: its.length })),
+        isCollapsed ? null : h('div', { class: 'rows' }, its.map(it => rowEl(it, false))));
+    }).filter(Boolean);
+  } else {
+    sections = inTab.length ? [h('section', { class: 'group flat' }, h('div', { class: 'rows' }, inTab.map(it => rowEl(it, true))))] : [];
+  }
   $('#list').replaceChildren(...(sections.length ? sections : [h('div', { class: 'empty', text: 'Здесь пусто' })]));
   syncHeaderHeight();
+}
+
+function toggleGrouping() {
+  grouped = !grouped;
+  store.set(LS.grouped, grouped);
+  render();
+  toast(grouped ? 'Группировка по эпикам включена' : 'Общий список без эпиков');
 }
 
 function selectTab(id) {
@@ -171,10 +192,10 @@ function selectTab(id) {
   window.scrollTo({ top: 0 });
 }
 
-function rowEl(it) {
+function rowEl(it, showEpic) {
   const isDone = doneStatus()?.id === it.status;
   const row = h('button', { class: 'row' + (it.pending ? ' pending' : '') },
-    h('span', { class: 'rt', text: it.title }),
+    h('span', { class: 'rt' }, h('span', { class: 'rtt', text: it.title }), showEpic && it.parent ? h('span', { class: 're', text: it.parent.title }) : null),
     it.body.trim() ? h('span', { class: 'has', text: '≡' }) : null,
     h('span', { class: 'rchev', text: '›' }));
   const wrap = h('div', { class: 'swipe' },
@@ -186,7 +207,8 @@ function rowEl(it) {
 }
 
 function bindRowSwipe(wrap, row, it, isDone) {
-  let x0 = 0, y0 = 0, dx = 0, axis = null, swiped = false;
+  let x0 = 0, y0 = 0, dx = 0, axis = null, swiped = false, pressTimer = null, dragged = false;
+  const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
   const left = wrap.querySelector('.swipe-act.left'), right = wrap.querySelector('.swipe-act.right');
   const setX = x => {
     row.style.transform = x ? `translateX(${x}px)` : '';
@@ -198,14 +220,18 @@ function bindRowSwipe(wrap, row, it, isDone) {
   setX(0);
   row.addEventListener('touchstart', e => {
     if (e.touches.length !== 1) return;
-    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; axis = null; swiped = false;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; axis = null; swiped = false; dragged = false;
     row.classList.remove('snap');
+    cancelPress();
+    pressTimer = setTimeout(() => { pressTimer = null; if (!axis) { dragged = true; startDrag(wrap, it, y0); } }, LONG_PRESS_MS);
   }, { passive: true });
   row.addEventListener('touchmove', e => {
     const t = e.touches[0];
+    if (drag?.wrap === wrap) { e.preventDefault(); drag.lastY = t.clientY; updateDrag(); return; }
     const mx = t.clientX - x0, my = t.clientY - y0;
     if (!axis) {
       if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      cancelPress();
       axis = Math.abs(mx) > Math.abs(my) ? 'x' : 'y';
     }
     if (axis !== 'x') return;
@@ -215,6 +241,8 @@ function bindRowSwipe(wrap, row, it, isDone) {
     setX(dx);
   }, { passive: false });
   const finish = () => {
+    cancelPress();
+    if (drag?.wrap === wrap) { endDrag(); return; }
     if (axis !== 'x') return;
     row.classList.add('snap');
     if (dx < -SWIPE_TRIGGER) {
@@ -228,11 +256,66 @@ function bindRowSwipe(wrap, row, it, isDone) {
     axis = null;
   };
   row.addEventListener('touchend', finish);
-  row.addEventListener('touchcancel', () => { row.classList.add('snap'); setX(0); axis = null; });
+  row.addEventListener('touchcancel', () => {
+    cancelPress();
+    if (drag?.wrap === wrap) { endDrag(true); return; }
+    row.classList.add('snap'); setX(0); axis = null;
+  });
+  row.addEventListener('contextmenu', e => e.preventDefault());
   row.addEventListener('click', e => {
-    if (swiped) { e.preventDefault(); swiped = false; return; }
+    if (swiped || dragged) { e.preventDefault(); swiped = dragged = false; return; }
     openTask(it);
   });
+}
+
+function startDrag(wrap, it, y) {
+  const container = wrap.parentElement;
+  const wraps = [...container.children];
+  const from = wraps.indexOf(wrap);
+  if (wraps.length < 2) return;
+  const rects = wraps.map(w => w.getBoundingClientRect());
+  drag = {
+    wrap, it, container, wraps, from, to: from, y0: y, lastY: y, scroll0: window.scrollY,
+    height: rects[from].height, mids: rects.map(r => r.top + r.height / 2 + window.scrollY),
+    minDy: rects[0].top - rects[from].top, maxDy: rects.at(-1).bottom - rects[from].bottom,
+  };
+  container.classList.add('sorting');
+  wrap.classList.add('lifted');
+  root.classList.add('sorting');
+  autoScroll();
+}
+
+function updateDrag() {
+  const d = drag;
+  if (!d) return;
+  const dy = Math.max(d.minDy, Math.min(d.maxDy, d.lastY - d.y0 + window.scrollY - d.scroll0));
+  d.wrap.style.transform = `translateY(${dy}px) scale(1.02)`;
+  const center = d.mids[d.from] + dy;
+  d.to = d.mids.filter((m, i) => i !== d.from && m < center).length;
+  d.wraps.forEach((w, i) => {
+    if (i === d.from) return;
+    const shift = d.from < d.to && i > d.from && i <= d.to ? -d.height : d.from > d.to && i >= d.to && i < d.from ? d.height : 0;
+    w.style.transform = shift ? `translateY(${shift}px)` : '';
+  });
+}
+
+function autoScroll() {
+  if (!drag) return;
+  const top = $('#top').offsetHeight + 40, bottom = window.innerHeight - 70;
+  const step = drag.lastY < top ? -10 : drag.lastY > bottom ? 10 : 0;
+  if (step) { window.scrollBy(0, step); updateDrag(); }
+  requestAnimationFrame(autoScroll);
+}
+
+function endDrag(cancelled = false) {
+  const d = drag;
+  drag = null;
+  if (!d) return;
+  d.wraps.forEach(w => { w.style.transform = ''; });
+  d.wrap.classList.remove('lifted');
+  d.container.classList.remove('sorting');
+  root.classList.remove('sorting');
+  if (!cancelled && d.to !== d.from) placeAt(d.it, d.to);
 }
 
 function completeWithUndo(it) {
@@ -257,6 +340,7 @@ function renderConnect() {
   $('#title').textContent = 'Board';
   $('#tabs').replaceChildren();
   $('#fab').hidden = true;
+  $('#groupBtn').hidden = true;
   const input = h('input', { type: 'password', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
   const go = h('button', { class: 'btn primary wide' }, 'Подключить');
   const connect = async () => {
@@ -378,6 +462,7 @@ function bindPullToRefresh() {
   }, { passive: true });
   document.addEventListener('touchmove', e => {
     if (!pulling) return;
+    if (drag) { pulling = false; show(0); return; }
     dy = e.touches[0].clientY - y0;
     if (dy <= 0 || window.scrollY > 0) { show(0); return; }
     show(dy * 0.55);
@@ -507,7 +592,8 @@ function openSettings() {
   openSheet(h('div', {},
     h('h3', { text: 'Настройки' }),
     h('p', { class: 'muted', text: project ? `Доска: ${project.title}` : 'Доска не выбрана' }),
-    h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Потяни список вниз, чтобы обновить.' }),
+    h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Потяни список вниз, чтобы обновить.' }),
+    data ? h('button', { class: 'btn wide', onclick: () => { closeSheet(); toggleGrouping(); } }, grouped ? 'Выключить группировку по эпикам' : 'Включить группировку по эпикам') : null,
     token ? h('button', { class: 'btn wide', onclick: async () => { closeSheet(); try { await pickProject(); } catch (e) { toast(e.message); } } }, 'Сменить доску') : null,
     token ? h('button', { class: 'btn danger wide', onclick: disconnect }, 'Отключить GitHub на этом устройстве') : null));
 }
@@ -553,15 +639,20 @@ function saveText(it, title, body) {
   return mutate(() => Object.assign(it, { title, body }), () => Object.assign(it, prev), () => gql(M.text, { i: it.id, t: title, b: body }));
 }
 
+const siblingsOf = it => data.items.filter(x => x.status === it.status && (!grouped || epicKey(x) === epicKey(it)));
+
 function move(it, dir) {
-  const siblings = data.items.filter(x => x.status === it.status && epicKey(x) === epicKey(it));
-  const idx = siblings.indexOf(it);
+  const from = siblingsOf(it).indexOf(it);
+  return placeAt(it, dir === 'top' ? 0 : dir === 'up' ? from - 1 : from + 1);
+}
+
+function placeAt(it, index) {
+  const siblings = siblingsOf(it);
+  const from = siblings.indexOf(it);
+  const others = siblings.filter(x => x !== it);
+  if (!others.length || index < 0 || index > others.length || index === from) return;
   const rest = data.items.filter(x => x !== it);
-  const before = x => rest[rest.indexOf(x) - 1] ?? null;
-  let after;
-  if (dir === 'top') { if (idx === 0) return; after = before(siblings[0]); }
-  else if (dir === 'up') { if (idx === 0) return; after = before(siblings[idx - 1]); }
-  else { if (idx === siblings.length - 1) return; after = siblings[idx + 1]; }
+  const after = index === 0 ? rest[rest.indexOf(others[0]) - 1] ?? null : others[index - 1];
   const prevOrder = data.items;
   return mutate(() => {
     rest.splice(after ? rest.indexOf(after) + 1 : 0, 0, it);
@@ -610,6 +701,7 @@ function toast(msg, { action, onAction } = {}) {
 
 $('#fab').addEventListener('click', () => data && openNew());
 $('#refreshBtn').addEventListener('click', load);
+$('#groupBtn').addEventListener('click', toggleGrouping);
 $('#settingsBtn').addEventListener('click', openSettings);
 $('#sheetWrap').addEventListener('click', e => { if (e.target.id === 'sheetWrap') closeSheet(); });
 document.addEventListener('touchstart', () => {}, { passive: true });
