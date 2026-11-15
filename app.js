@@ -715,6 +715,13 @@ function rankedEpicOptions() {
   return epicOptions().map((o, i) => ({ o, i, s: score.get(o.id) || 0 })).sort((a, b) => b.s - a.s || a.i - b.i).map(x => x.o);
 }
 
+const chipLine = (label, chips) => h('div', { class: 'chip-line' }, h('span', { class: 'cl-label', text: label }), chips);
+
+function revealActiveChip(chips) {
+  const prev = chips.querySelector('.chip.active')?.previousElementSibling;
+  chips.scrollLeft = prev ? prev.offsetLeft - chips.offsetLeft : 0;
+}
+
 function autoGrow(ta) {
   const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
   ta.addEventListener('input', fit);
@@ -751,16 +758,16 @@ function openTask(it) {
     if (st && st.id !== it.status && !isDone) quick.push(h('button', { class: 'qa', onclick: () => quickMove(it, st, `Перенесено в ${st.name}`) }, icon(ico), st.name));
   }
   const meta = [it.number ? `#${it.number}` : 'Сохраняется…', it.parent ? it.parent.title : null].filter(Boolean).join(' · ');
+  const statusChips = chipGroup(statusOptions(), it.status, id => { if (id !== it.status) { setStatus(it, id); toast(`Перенесено в ${statusName(id)}`); } });
+  const epicChips = chipGroup(epicOptions().map(o => ({ ...o, swatch: true })), epicKey(it), id => setEpic(it, id === NO_EPIC ? null : id));
   openSheet(h('div', { class: 'task' },
     h('div', { class: 'sheet-head' },
       h('span', { class: 'sh-meta' }, it.parent ? swatch(it.parent.id) : null, meta),
       h('button', { class: 'link-btn', onclick: () => closeSheet() }, 'Закрыть')),
     title,
     quick.length ? h('div', { class: 'quick' + (quick.length === 1 ? ' one' : '') }, quick) : null,
-    h('div', { class: 'field-label', text: 'Статус' }),
-    chipGroup(statusOptions(), it.status, id => { if (id !== it.status) { setStatus(it, id); toast(`Перенесено в ${statusName(id)}`); } }),
-    h('div', { class: 'field-label', text: 'Эпик' }),
-    chipGroup(epicOptions().map(o => ({ ...o, swatch: true })), epicKey(it), id => setEpic(it, id === NO_EPIC ? null : id)),
+    chipLine('Статус', statusChips),
+    chipLine('Эпик', epicChips),
     h('div', { class: 'field-label', text: 'Заметки' }),
     body,
     h('div', { class: 'actions' },
@@ -775,6 +782,8 @@ function openTask(it) {
     });
   autoGrow(title);
   autoGrow(body);
+  revealActiveChip(statusChips);
+  revealActiveChip(epicChips);
 }
 
 function openNew() {
@@ -807,23 +816,19 @@ function openNew() {
   };
   add.addEventListener('click', submit);
   title.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); body.focus(); } });
-  const line = (label, chips) => h('div', { class: 'chip-line' }, h('span', { class: 'cl-label', text: label }), chips);
   const epicChips = chipGroup(ranked.map(o => ({ ...o, swatch: true })), epicId, id => { epicId = id; }, { holdFocus: true });
   const statusChips = chipGroup(statusOptions(), statusId, id => { statusId = id; }, { holdFocus: true });
   openSheet(h('div', { class: 'new-task' },
     h('div', { class: 'new-head' }, h('h2', { text: 'Новая задача' }), add),
     title,
     body,
-    line('Эпик', epicChips),
-    line('Статус', statusChips),
+    chipLine('Эпик', epicChips),
+    chipLine('Статус', statusChips),
     h('div', { class: 'toggles' },
       keepFocus(h('label', { class: 'toggle' }, top, 'В начало')),
       keepFocus(h('label', { class: 'toggle' }, closeAfter, 'Закрыть после')))));
-  for (const chips of [epicChips, statusChips]) {
-    const active = chips.querySelector('.chip.active');
-    const prev = active?.previousElementSibling;
-    chips.scrollLeft = prev ? prev.offsetLeft - chips.offsetLeft : 0;
-  }
+  revealActiveChip(epicChips);
+  revealActiveChip(statusChips);
   title.focus();
 }
 

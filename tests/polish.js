@@ -35,6 +35,8 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
     check(`${scheme}: task sheet has Закрыть, no Готово`, !!(await page.$('#sheet .link-btn:text-is("Закрыть")')) && !(await page.$('#sheet button:text-is("Готово")')));
     const qa = await page.$$eval('#sheet .qa', b => b.map(x => x.textContent));
     check(`${scheme}: quick actions Выполнено / Pause / Backlog`, qa.join('|') === 'Выполнено|Pause|Backlog', qa.join('|'));
+    const lines = await page.$$eval('#sheet .chip-line .chips', cs => cs.map(c => ({ wrap: getComputedStyle(c).flexWrap, h: c.getBoundingClientRect().height })));
+    check(`${scheme}: task sheet status and epic chips each on one scrollable line`, lines.length === 2 && lines.every(l => l.wrap === 'nowrap' && l.h <= 44), JSON.stringify(lines));
     check(`${scheme}: sheet is a labelled dialog`, await page.$eval('#sheet', s => s.getAttribute('role') === 'dialog' && s.getAttribute('aria-modal') === 'true'));
     const before = await doneCount();
     await page.tap('#sheet .qa.primary');
