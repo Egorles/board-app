@@ -1,8 +1,10 @@
 const API = 'https://api.github.com/graphql';
 const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=repo,project&description=Board%20PWA';
-const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastEpic: 'pb.lastEpic', grouped: 'pb.grouped' };
+const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastEpic: 'pb.lastEpic', grouped: 'pb.grouped', closeAfterAdd: 'pb.closeAfterAdd' };
 const OPTION_COLORS = { GRAY: '#8b949e', BLUE: '#2f81f7', GREEN: '#2ea043', YELLOW: '#d29922', ORANGE: '#db6d28', RED: '#f85149', PINK: '#db61a2', PURPLE: '#a371f7' };
 const NO_EPIC = 'none';
+const NO_STATUS = '__none';
+const COLOR_ORDER = Object.keys(OPTION_COLORS);
 const SWIPE_TRIGGER = 88;
 const PULL_TRIGGER = 70;
 const LONG_PRESS_MS = 380;
@@ -20,6 +22,7 @@ let tab = store.get(LS.tab);
 let collapsed = new Set(store.get(LS.collapsed, []));
 let grouped = store.get(LS.grouped, true);
 let drag = null;
+const pendingCreates = new Set();
 let loading = false;
 let lastLoad = 0;
 let renderedTab = null;
@@ -56,15 +59,15 @@ async function gql(query, variables = {}) {
 }
 
 const ITEMS_Q = `query($id:ID!,$after:String){node(id:$id){... on ProjectV2{title
-  field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name color}}}
+  field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name color description}}}
   repositories(first:1){nodes{id}}
   items(first:100,after:$after){pageInfo{hasNextPage endCursor}
     nodes{id isArchived
       fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId}}
       content{__typename ... on Issue{id number title body state url parent{id number title}}}}}}}}`;
 
-const EPICS_Q = `query($id:ID!){node(id:$id){... on Repository{
-  issues(first:100,labels:["epic"],states:[OPEN],orderBy:{field:CREATED_AT,direction:ASC}){nodes{id number title}}}}}`;
+const EPICS_Q = `query($id:ID!){node(id:$id){... on Repository{label(name:"epic"){id}
+  issues(first:100,labels:["epic"],states:[OPEN],orderBy:{field:CREATED_AT,direction:ASC}){nodes{id number title url}}}}}`;
 
 const M = {
   status: `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}}`,
@@ -74,7 +77,11 @@ const M = {
   setParent: `mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s,replaceParent:true}){clientMutationId}}`,
   unsetParent: `mutation($p:ID!,$s:ID!){removeSubIssue(input:{issueId:$p,subIssueId:$s}){clientMutationId}}`,
   position: `mutation($p:ID!,$i:ID!,$a:ID){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a}){clientMutationId}}`,
-  create: `mutation($r:ID!,$t:String!,$b:String,$par:ID){createIssue(input:{repositoryId:$r,title:$t,body:$b,parentIssueId:$par}){issue{id number url}}}`,
+  create: `mutation($r:ID!,$t:String!,$b:String,$par:ID,$p:ID!){createIssue(input:{repositoryId:$r,title:$t,body:$b,parentIssueId:$par,projectV2Ids:[$p]}){issue{id number url projectItems(first:10){nodes{id project{id}}}}}}`,
+  createEpic: `mutation($r:ID!,$t:String!,$l:[ID!]){createIssue(input:{repositoryId:$r,title:$t,labelIds:$l}){issue{id number title url}}}`,
+  createLabel: `mutation($r:ID!){createLabel(input:{repositoryId:$r,name:"epic",color:"8250df",description:"Эпик / проект"}){label{id}}}`,
+  rename: `mutation($i:ID!,$t:String!){updateIssue(input:{id:$i,title:$t}){clientMutationId}}`,
+  statuses: `mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{options{id name color description}}}}}`,
   addItem: `mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}`,
   placeNew: `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!,$top:Boolean!){
     s:updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}
@@ -105,10 +112,16 @@ async function load() {
       after = p.items.pageInfo.hasNextPage ? p.items.pageInfo.endCursor : null;
     } while (after);
     const repoId = meta.repositories.nodes[0]?.id ?? null;
-    const epics = repoId ? (await gql(EPICS_Q, { id: repoId })).node.issues.nodes : [];
+    const repo = repoId ? (await gql(EPICS_Q, { id: repoId })).node : null;
+    const epics = repo ? repo.issues.nodes : [];
     const epicIds = new Set(epics.map(e => e.id));
     for (const it of items) if (it.parent && !epicIds.has(it.parent.id)) { epics.push(it.parent); epicIds.add(it.parent.id); }
-    data = { title: meta.title, fieldId: meta.field.id, statuses: meta.field.options, repoId, epics, items: items.filter(i => !epicIds.has(i.id)) };
+    const loaded = items.filter(i => !epicIds.has(i.id));
+    for (const temp of pendingCreates) {
+      if (temp.id && loaded.some(x => x.id === temp.id)) continue;
+      temp.top ? loaded.unshift(temp) : loaded.push(temp);
+    }
+    data = { title: meta.title, fieldId: meta.field.id, statuses: meta.field.options, repoId, epicLabelId: repo?.label?.id ?? null, epics, items: loaded };
     lastLoad = Date.now();
     persistRender();
   } catch (e) {
@@ -124,6 +137,8 @@ function persistRender() { persist(); render(); }
 const optionColor = c => OPTION_COLORS[c] || OPTION_COLORS.GRAY;
 const doneStatus = () => data.statuses.find(s => /^done$/i.test(s.name)) || data.statuses.at(-1);
 const statusName = id => data.statuses.find(s => s.id === id)?.name ?? '';
+const statusKey = it => (it.status && data.statuses.some(s => s.id === it.status)) ? it.status : NO_STATUS;
+const defaultStatusId = () => (data.statuses.find(s => /^to\s*do$/i.test(s.name)) || data.statuses[0])?.id ?? NO_STATUS;
 const epicKey = it => it.parent?.id ?? NO_EPIC;
 
 function syncHeaderHeight() { root.style.setProperty('--hdr', $('#top').offsetHeight + 'px'); }
@@ -134,14 +149,14 @@ function render() {
   if (!data) { $('#tabs').replaceChildren(); $('#list').replaceChildren(h('div', { class: 'empty', text: 'Загрузка…' })); syncHeaderHeight(); return; }
   $('#title').textContent = data.title;
   document.title = data.title;
-  if (!data.statuses.some(s => s.id === tab)) tab = (data.statuses.find(s => /^to\s*do$/i.test(s.name)) || data.statuses[0])?.id;
-
   const counts = {};
-  for (const it of data.items) counts[it.status] = (counts[it.status] || 0) + 1;
+  for (const it of data.items) { const k = statusKey(it); counts[k] = (counts[k] || 0) + 1; }
+  const tabList = [...(counts[NO_STATUS] ? [{ id: NO_STATUS, name: 'Без статуса', color: null }] : []), ...data.statuses];
+  if (!tabList.some(s => s.id === tab)) tab = defaultStatusId();
   const tabsEl = $('#tabs');
   const scrollLeft = tabsEl.scrollLeft;
-  tabsEl.replaceChildren(...data.statuses.map(s => h('button', {
-    class: 'tab' + (s.id === tab ? ' active' : ''), style: `--c:${optionColor(s.color)}`,
+  tabsEl.replaceChildren(...tabList.map(s => h('button', {
+    class: 'tab' + (s.id === tab ? ' active' : '') + (s.id === NO_STATUS ? ' no-status' : ''), style: `--c:${s.color ? optionColor(s.color) : 'transparent'}`,
     onclick: () => selectTab(s.id),
   }, h('span', { class: 'dot' }), s.name, h('span', { class: 'n', text: counts[s.id] || 0 }))));
   tabsEl.scrollLeft = scrollLeft;
@@ -157,7 +172,7 @@ function render() {
   groupBtn.classList.toggle('off', !grouped);
   groupBtn.setAttribute('aria-label', grouped ? 'Выключить группировку по эпикам' : 'Включить группировку по эпикам');
 
-  const inTab = data.items.filter(i => i.status === tab);
+  const inTab = data.items.filter(i => statusKey(i) === tab);
   let sections;
   if (grouped) {
     const groups = [...data.epics.map(e => ({ key: e.id, title: e.title })), { key: NO_EPIC, title: 'Без эпика' }];
@@ -165,9 +180,12 @@ function render() {
       const its = inTab.filter(i => epicKey(i) === g.key);
       if (!its.length) return null;
       const isCollapsed = collapsed.has(g.key);
+      const epic = data.epics.find(e => e.id === g.key);
       return h('section', { class: 'group' + (isCollapsed ? ' collapsed' : '') },
-        h('button', { class: 'group-head', onclick: () => toggleGroup(g.key) },
-          h('span', { class: 'chev', text: '›' }), h('span', { class: 'gt', text: g.title }), h('span', { class: 'n', text: its.length })),
+        h('div', { class: 'group-head' },
+          h('button', { class: 'gh-toggle', onclick: () => toggleGroup(g.key) },
+            h('span', { class: 'chev', text: '›' }), h('span', { class: 'gt', text: g.title }), h('span', { class: 'n', text: its.length })),
+          epic ? h('button', { class: 'gh-more', 'aria-label': 'Эпик: редактировать', onclick: () => openEpic(epic) }, '⋯') : null),
         isCollapsed ? null : h('div', { class: 'rows' }, its.map(it => rowEl(it, false))));
     }).filter(Boolean);
   } else {
@@ -197,7 +215,7 @@ function rowEl(it, showEpic) {
   const row = h('button', { class: 'row' + (it.pending ? ' pending' : '') },
     h('span', { class: 'rt' }, h('span', { class: 'rtt', text: it.title }), showEpic && it.parent ? h('span', { class: 're', text: it.parent.title }) : null),
     it.body.trim() ? h('span', { class: 'has', text: '≡' }) : null,
-    h('span', { class: 'rchev', text: '›' }));
+    it.pending ? h('span', { class: 'spinner', 'aria-label': 'Сохраняется' }) : h('span', { class: 'rchev', text: '›' }));
   const wrap = h('div', { class: 'swipe' },
     h('div', { class: 'swipe-act left', text: '⇈ Наверх' }),
     h('div', { class: 'swipe-act right', text: isDone ? 'Вернуть ↺' : 'Готово ✓' }),
@@ -560,30 +578,41 @@ function openTask(it) {
 function openNew() {
   let epicId = store.get(LS.lastEpic, NO_EPIC);
   if (epicId !== NO_EPIC && !data.epics.some(e => e.id === epicId)) epicId = NO_EPIC;
-  let statusId = tab;
-  const title = h('textarea', { class: 't-title new-title', rows: '1', placeholder: 'Что нужно сделать?', enterkeyhint: 'send', autocapitalize: 'sentences' });
+  let statusId = tab === NO_STATUS ? defaultStatusId() : tab;
+  const title = h('textarea', { class: 't-title new-title', rows: '1', placeholder: 'Что нужно сделать?', enterkeyhint: 'next', autocapitalize: 'sentences' });
+  const body = h('textarea', { class: 'new-body', rows: '2', placeholder: 'Описание (необязательно)', autocapitalize: 'sentences' });
   const top = keepFocus(h('input', { type: 'checkbox' }));
+  const closeAfter = keepFocus(h('input', { type: 'checkbox' }));
+  closeAfter.checked = store.get(LS.closeAfterAdd, false);
+  closeAfter.addEventListener('change', () => store.set(LS.closeAfterAdd, closeAfter.checked));
   const add = keepFocus(h('button', { class: 'btn primary wide' }, 'Добавить'));
-  const fit = autoGrow(title);
+  const fitTitle = autoGrow(title);
+  const fitBody = autoGrow(body);
   const submit = () => {
     const t = title.value.trim();
     if (!t) { title.focus(); return; }
     store.set(LS.lastEpic, epicId);
-    createTask({ title: t, epicId: epicId === NO_EPIC ? null : epicId, statusId, top: top.checked });
-    title.value = '';
-    fit();
+    createTask({ title: t, body: body.value.trim(), epicId: epicId === NO_EPIC ? null : epicId, statusId, top: top.checked });
     toast('Добавлено');
+    if (closeAfter.checked) { closeSheet(true); return; }
+    title.value = '';
+    body.value = '';
+    fitTitle();
+    fitBody();
+    title.focus();
   };
   add.addEventListener('click', submit);
-  title.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
+  title.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); body.focus(); } });
   openSheet(h('div', {},
     h('h3', { text: 'Новая задача' }),
     title,
+    body,
     h('div', { class: 'field-label', text: 'Эпик' }),
     chipGroup(epicOptions(), epicId, id => { epicId = id; }, { holdFocus: true }),
     h('div', { class: 'field-label', text: 'Статус' }),
     chipGroup(statusOptions(), statusId, id => { statusId = id; }, { holdFocus: true }),
     keepFocus(h('label', { class: 'toggle' }, top, 'В начало списка (важнее остальных)')),
+    keepFocus(h('label', { class: 'toggle' }, closeAfter, 'Закрыть после добавления')),
     add));
   title.focus();
 }
@@ -593,9 +622,194 @@ function openSettings() {
     h('h3', { text: 'Настройки' }),
     h('p', { class: 'muted', text: project ? `Доска: ${project.title}` : 'Доска не выбрана' }),
     h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Потяни список вниз, чтобы обновить.' }),
+    data ? h('button', { class: 'btn wide', onclick: openEpics }, 'Эпики…') : null,
+    data ? h('button', { class: 'btn wide', onclick: openStatuses }, 'Статусы…') : null,
     data ? h('button', { class: 'btn wide', onclick: () => { closeSheet(); toggleGrouping(); } }, grouped ? 'Выключить группировку по эпикам' : 'Включить группировку по эпикам') : null,
     token ? h('button', { class: 'btn wide', onclick: async () => { closeSheet(); try { await pickProject(); } catch (e) { toast(e.message); } } }, 'Сменить доску') : null,
     token ? h('button', { class: 'btn danger wide', onclick: disconnect }, 'Отключить GitHub на этом устройстве') : null));
+}
+
+const childrenOf = epicId => data.items.filter(it => epicKey(it) === epicId);
+
+function openEpics() {
+  const input = h('input', { type: 'text', placeholder: 'Название нового эпика', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const create = async () => {
+    const t = input.value.trim();
+    if (!t) { input.focus(); return; }
+    input.value = '';
+    input.blur();
+    await createEpic(t);
+    openEpics();
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+  openSheet(h('div', {},
+    h('h3', { text: 'Эпики' }),
+    h('div', { class: 'list' }, [...data.epics, { id: NO_EPIC, title: 'Без эпика', virtual: true }].map(e => {
+      const n = childrenOf(e.id).length;
+      return h('button', { class: 'list-row', onclick: () => openEpic(e) },
+        h('span', { class: 'lr-title' + (e.virtual ? ' muted' : ''), text: e.title }),
+        h('span', { class: 'n', text: n }),
+        h('span', { class: 'rchev', text: '›' }));
+    })),
+    h('div', { class: 'field-label', text: 'Новый эпик' }),
+    h('div', { class: 'inline-add' }, input, h('button', { class: 'btn primary', onclick: create }, 'Создать'))));
+}
+
+function openEpic(epic) {
+  const isVirtual = epic.id === NO_EPIC;
+  const kids = childrenOf(epic.id);
+  const selected = new Set(kids.filter(k => !k.pending).map(k => k.id));
+  let target = null;
+  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  title.value = epic.title;
+  title.readOnly = isVirtual;
+  title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } });
+  const moveBtn = h('button', { class: 'btn primary wide' });
+  const updateMoveBtn = () => {
+    moveBtn.textContent = selected.size ? `Перенести ${selected.size} ${plural(selected.size, ['задачу', 'задачи', 'задач'])}` : 'Выбери задачи';
+    moveBtn.disabled = !selected.size || target === null;
+  };
+  const targets = [...data.epics.filter(e => e.id !== epic.id).map(e => ({ id: e.id, name: e.title })), ...(isVirtual ? [] : [{ id: NO_EPIC, name: 'Без эпика' }])];
+  const allBox = h('input', { type: 'checkbox' });
+  allBox.checked = selected.size === kids.length && kids.length > 0;
+  const boxes = [];
+  const rows = kids.map(k => {
+    const cb = h('input', { type: 'checkbox', disabled: k.pending ? true : null });
+    cb.checked = selected.has(k.id);
+    cb.addEventListener('change', () => {
+      cb.checked ? selected.add(k.id) : selected.delete(k.id);
+      allBox.checked = selected.size === kids.length;
+      updateMoveBtn();
+    });
+    boxes.push([cb, k]);
+    return h('label', { class: 'pick-row' }, cb, h('span', { class: 'lr-title', text: k.title }), h('span', { class: 'n', text: statusName(k.status) || '—' }));
+  });
+  allBox.addEventListener('change', () => {
+    for (const [cb, k] of boxes) { if (k.pending) continue; cb.checked = allBox.checked; allBox.checked ? selected.add(k.id) : selected.delete(k.id); }
+    updateMoveBtn();
+  });
+  moveBtn.addEventListener('click', async () => {
+    const chosen = kids.filter(k => selected.has(k.id));
+    const dest = target === NO_EPIC ? null : data.epics.find(e => e.id === target);
+    closeSheet(true);
+    await bulkMove(chosen, dest);
+  });
+  updateMoveBtn();
+  openSheet(h('div', {},
+    title,
+    isVirtual ? null : h('p', { class: 'muted small', text: `#${epic.number} · ${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])} на доске` }),
+    kids.length ? h('div', {},
+      h('div', { class: 'field-label', text: 'Задачи' }),
+      h('label', { class: 'pick-row all' }, allBox, h('span', { class: 'lr-title', text: 'Выбрать все' })),
+      h('div', { class: 'list' }, rows),
+      h('div', { class: 'field-label', text: 'Перенести выбранные в' }),
+      targets.length ? chipGroup(targets, null, id => { target = id; updateMoveBtn(); }) : h('p', { class: 'muted', text: 'Нет других эпиков' }),
+      moveBtn) : h('p', { class: 'muted', text: 'Задач в этом эпике нет' }),
+    isVirtual ? null : h('div', { class: 'actions two' },
+      epic.url ? h('a', { class: 'btn', href: epic.url, target: '_blank', rel: 'noopener' }, `#${epic.number} ↗`) : h('span'),
+      h('button', { class: 'btn danger', onclick: () => closeEpic(epic) }, 'Закрыть эпик'))),
+    () => {
+      const t = title.value.trim();
+      if (!isVirtual && t && t !== epic.title) renameEpic(epic, t);
+    });
+  autoGrow(title);
+}
+
+const plural = (n, [one, few, many]) => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; };
+
+async function ensureEpicLabel() {
+  if (data.epicLabelId) return data.epicLabelId;
+  data.epicLabelId = (await gql(M.createLabel, { r: data.repoId })).createLabel.label.id;
+  persist();
+  return data.epicLabelId;
+}
+
+async function createEpic(title) {
+  try {
+    const label = await ensureEpicLabel();
+    const issue = (await gql(M.createEpic, { r: data.repoId, t: title, l: [label] })).createIssue.issue;
+    data.epics.push(issue);
+    persistRender();
+    toast(`Эпик «${title}» создан`);
+  } catch (e) { toast('Не создался: ' + e.message); }
+}
+
+function renameEpic(epic, title) {
+  const prev = epic.title;
+  const sync = t => { epic.title = t; for (const it of data.items) if (it.parent?.id === epic.id) it.parent.title = t; };
+  return mutate(() => sync(title), () => sync(prev), () => gql(M.rename, { i: epic.id, t: title }));
+}
+
+async function bulkMove(tasks, dest) {
+  const moving = tasks.filter(t => !t.pending && (t.parent?.id ?? null) !== (dest?.id ?? null));
+  if (!moving.length) return;
+  const prev = new Map(moving.map(t => [t, t.parent]));
+  const ops = moving.map((t, i) => dest
+    ? `m${i}: addSubIssue(input:{issueId:${JSON.stringify(dest.id)},subIssueId:${JSON.stringify(t.id)},replaceParent:true}){clientMutationId}`
+    : `m${i}: removeSubIssue(input:{issueId:${JSON.stringify(t.parent.id)},subIssueId:${JSON.stringify(t.id)}}){clientMutationId}`);
+  await mutate(
+    () => moving.forEach(t => { t.parent = dest ? { id: dest.id, number: dest.number, title: dest.title } : null; }),
+    () => moving.forEach(t => { t.parent = prev.get(t); }),
+    async () => { for (let i = 0; i < ops.length; i += 20) await gql(`mutation{${ops.slice(i, i + 20).join(' ')}}`); });
+  toast(`Перенесено: ${moving.length} → ${dest ? dest.title : 'без эпика'}`);
+}
+
+async function closeEpic(epic) {
+  const kids = childrenOf(epic.id);
+  if (kids.length && !confirm(`В эпике ${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])}. Закрыть эпик? Задачи останутся на доске и переедут в «Без эпика».`)) return;
+  if (!kids.length && !confirm(`Закрыть эпик «${epic.title}»?`)) return;
+  closeSheet(true);
+  const idx = data.epics.indexOf(epic);
+  await mutate(
+    () => { data.epics.splice(idx, 1); kids.forEach(k => { k.parent = null; }); },
+    () => { data.epics.splice(idx, 0, epic); kids.forEach(k => { k.parent = { id: epic.id, number: epic.number, title: epic.title }; }); },
+    async () => {
+      const ops = kids.map((k, i) => `m${i}: removeSubIssue(input:{issueId:${JSON.stringify(epic.id)},subIssueId:${JSON.stringify(k.id)}}){clientMutationId}`);
+      for (let i = 0; i < ops.length; i += 20) await gql(`mutation{${ops.slice(i, i + 20).join(' ')}}`);
+      await gql(M.close, { i: epic.id, r: 'COMPLETED' });
+    });
+  toast(`Эпик «${epic.title}» закрыт`);
+}
+
+function openStatuses() {
+  const draft = data.statuses.map(s => ({ id: s.id, name: s.name, color: s.color || 'GRAY', description: s.description || '' }));
+  const listEl = h('div', { class: 'list' });
+  const draw = () => {
+    listEl.replaceChildren(...draft.map((s, i) => {
+      const name = h('input', { type: 'text', class: 'st-name', autocapitalize: 'sentences', enterkeyhint: 'done' });
+      name.value = s.name;
+      name.addEventListener('input', () => { s.name = name.value; });
+      const count = s.id ? data.items.filter(it => it.status === s.id).length : 0;
+      return h('div', { class: 'st-row' },
+        h('button', { class: 'st-dot', style: `--c:${optionColor(s.color)}`, 'aria-label': 'Цвет', onclick: () => { s.color = COLOR_ORDER[(COLOR_ORDER.indexOf(s.color) + 1) % COLOR_ORDER.length]; draw(); } }),
+        name,
+        h('span', { class: 'n', text: count }),
+        h('button', { class: 'st-btn', 'aria-label': 'Выше', disabled: i === 0 ? true : null, onclick: () => { [draft[i - 1], draft[i]] = [draft[i], draft[i - 1]]; draw(); } }, '↑'),
+        h('button', { class: 'st-btn', 'aria-label': 'Ниже', disabled: i === draft.length - 1 ? true : null, onclick: () => { [draft[i + 1], draft[i]] = [draft[i], draft[i + 1]]; draw(); } }, '↓'),
+        h('button', { class: 'st-btn danger', 'aria-label': 'Удалить', onclick: () => {
+          if (count && !confirm(`В статусе «${s.name}» ${count} ${plural(count, ['задача', 'задачи', 'задач'])}. После сохранения они попадут во вкладку «Без статуса». Удалить?`)) return;
+          draft.splice(i, 1); draw();
+        } }, '×'));
+    }));
+  };
+  draw();
+  const save = async () => {
+    const options = draft.map(s => ({ ...(s.id ? { id: s.id } : {}), name: s.name.trim() || 'Без названия', color: s.color, description: s.description }));
+    if (!options.length) { toast('Нужен хотя бы один статус'); return; }
+    closeSheet(true);
+    try {
+      const saved = (await gql(M.statuses, { f: data.fieldId, o: options })).updateProjectV2Field.projectV2Field.options;
+      data.statuses = saved;
+      persistRender();
+      toast('Статусы сохранены');
+    } catch (e) { toast('Не сохранилось: ' + e.message); }
+  };
+  openSheet(h('div', {},
+    h('h3', { text: 'Статусы' }),
+    h('p', { class: 'muted small', text: 'Тап по кружку меняет цвет. Порядок здесь — порядок вкладок и колонок на доске.' }),
+    listEl,
+    h('button', { class: 'btn wide', onclick: () => { draft.push({ id: null, name: 'Новый статус', color: 'GRAY', description: '' }); draw(); listEl.lastChild?.querySelector('input')?.select(); } }, '+ Добавить статус'),
+    h('button', { class: 'btn primary wide', onclick: save }, 'Сохранить')));
 }
 
 function disconnect() {
@@ -639,7 +853,7 @@ function saveText(it, title, body) {
   return mutate(() => Object.assign(it, { title, body }), () => Object.assign(it, prev), () => gql(M.text, { i: it.id, t: title, b: body }));
 }
 
-const siblingsOf = it => data.items.filter(x => x.status === it.status && (!grouped || epicKey(x) === epicKey(it)));
+const siblingsOf = it => data.items.filter(x => statusKey(x) === statusKey(it) && (!grouped || epicKey(x) === epicKey(it)));
 
 function move(it, dir) {
   const from = siblingsOf(it).indexOf(it);
@@ -660,23 +874,32 @@ function placeAt(it, index) {
   }, () => { data.items = prevOrder; }, () => gql(M.position, { p: project.id, i: it.itemId, a: after?.itemId ?? null }));
 }
 
-async function createTask({ title, epicId, statusId, top }) {
+async function createTask({ title, body, epicId, statusId, top }) {
   const epic = epicId ? data.epics.find(e => e.id === epicId) : null;
-  const temp = { itemId: 'tmp-' + Date.now() + Math.random(), id: null, number: null, title, body: '', state: 'OPEN', url: null, status: statusId,
-    parent: epic ? { id: epic.id, number: epic.number, title: epic.title } : null, pending: true };
+  const temp = { itemId: 'tmp-' + Date.now() + Math.random(), id: null, number: null, title, body: body || '', state: 'OPEN', url: null, status: statusId,
+    parent: epic ? { id: epic.id, number: epic.number, title: epic.title } : null, pending: true, top };
+  pendingCreates.add(temp);
   top ? data.items.unshift(temp) : data.items.push(temp);
   render();
   try {
-    const issue = (await gql(M.create, { r: data.repoId, t: title, b: null, par: epic?.id ?? null })).createIssue.issue;
-    const itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
-    await gql(M.placeNew, { p: project.id, i: itemId, f: data.fieldId, o: statusId, top });
+    const issue = (await gql(M.create, { r: data.repoId, t: title, b: body || null, par: epic?.id ?? null, p: project.id })).createIssue.issue;
+    let itemId = issue.projectItems?.nodes.find(n => n.project.id === project.id)?.id;
+    if (!itemId) itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
+    if (statusId && statusId !== NO_STATUS) await gql(M.placeNew, { p: project.id, i: itemId, f: data.fieldId, o: statusId, top });
+    else if (top) await gql(M.position, { p: project.id, i: itemId, a: null });
     Object.assign(temp, { itemId, id: issue.id, number: issue.number, url: issue.url });
     delete temp.pending;
+    delete temp.top;
+    const duplicate = data.items.find(x => x !== temp && x.id === issue.id);
+    if (duplicate) data.items = data.items.filter(x => x !== temp);
+    else if (!data.items.includes(temp)) data.items.push(temp);
     persistRender();
   } catch (e) {
     data.items = data.items.filter(x => x !== temp);
     persistRender();
     toast('Не создалось: ' + e.message);
+  } finally {
+    pendingCreates.delete(temp);
   }
 }
 
