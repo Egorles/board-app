@@ -68,7 +68,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await drag(b.x + b.width / 2, b.y + 10, b.x + b.width / 2, b.y + 60, 6, 20);
   await page.waitForTimeout(450);
   check('small drag keeps sheet open', !!(await page.$('#sheetWrap.open')));
-  await page.tap('#sheet button:has-text("Готово")');
+  await page.tap('#sheet button:has-text("Закрыть")');
   await page.waitForTimeout(400);
 
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -127,10 +127,10 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   };
   let before = (await rowTitles())[0][1];
   const callsN = await page.evaluate(() => window.__calls.length);
-  const lifted = await longDrag('.row:has-text("Оплатить налоги")', 3.0);
+  const lifted = await longDrag('.row:has-text("Записаться к стоматологу")', 3.2);
   let afterOrder = (await rowTitles())[0][1];
   check('long press lifts row', lifted);
-  const iFrom = before.indexOf('Оплатить налоги'), iTo = afterOrder.indexOf('Оплатить налоги');
+  const iFrom = before.indexOf('Записаться к стоматологу'), iTo = afterOrder.indexOf('Записаться к стоматологу');
   check('drag down 2 rows reorders', iTo === iFrom + 2, `${iFrom}→${iTo}: ${afterOrder.slice(0, 5).join(' | ')}`);
   const posCall = await page.evaluate(n => window.__calls.slice(n).find(c => c.q.includes('updateProjectV2ItemPosition')), callsN);
   check('drag sends position mutation', !!posCall, JSON.stringify(posCall?.variables));

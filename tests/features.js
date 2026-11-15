@@ -28,7 +28,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await wait(300);
   await page.tap('#sheet .chip:has-text("ToDo")');
   await wait(500);
-  await page.tap('#sheet button:has-text("Готово")');
+  await page.tap('#sheet button:has-text("Закрыть")');
   await wait(400);
   tabs = await tabNames();
   check('no-status tab disappears after assigning status', !tabs.some(t => t.startsWith('Без статуса')), tabs.join(' '));
@@ -83,7 +83,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
 
   await page.tap('#settingsBtn');
   await wait(300);
-  await page.tap('#sheet button:has-text("Эпики…")');
+  await page.tap('#sheet .list-row:has-text("Эпики")');
   await wait(300);
   await page.fill('#sheet .inline-add input', 'Тестовый эпик');
   await page.tap('#sheet .inline-add button');
@@ -95,7 +95,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
 
   await page.tap('#sheet .list-row:has-text("Дом")');
   await wait(300);
-  await page.tap('#sheet label.pick-row.all');
+  check('bulk move starts with nothing selected', (await page.textContent('#sheet .btn.primary.wide')).includes('Выбери задачи'));
   await page.tap('#sheet label.pick-row:has-text("Собрать отчёт")');
   await page.tap('#sheet label.pick-row:has-text("Почистить телефон")');
   const btnText = await page.textContent('#sheet .btn.primary.wide');
@@ -121,12 +121,12 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
 
   await page.tap('#settingsBtn');
   await wait(300);
-  await page.tap('#sheet button:has-text("Статусы…")');
+  await page.tap('#sheet .list-row:has-text("Статусы")');
   await wait(300);
   const names = await page.$$('#sheet .st-name');
   await names[3].fill('Пауза');
   await page.tap('#sheet .st-row:nth-child(1) .st-btn.danger');
-  await page.tap('#sheet button:has-text("+ Добавить статус")');
+  await page.tap('#sheet button:has-text("Добавить статус")');
   const all = await page.$$('#sheet .st-name');
   await all.at(-1).fill('Ждёт ответа');
   await page.tap('#sheet .st-row:nth-child(1) .st-btn.danger');

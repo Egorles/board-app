@@ -34,6 +34,7 @@
     }
     return realFetch(url, opts);
   };
+  if (!location.search.includes('coach') && !localStorage.getItem('pb.coachSeen')) localStorage.setItem('pb.coachSeen', 'true');
   if (!location.search.includes('fresh') && !localStorage.getItem('pb.token')) {
     localStorage.setItem('pb.token', JSON.stringify('mock-token'));
     localStorage.setItem('pb.project', JSON.stringify({ id: 'P1', title: 'Personal Board' }));

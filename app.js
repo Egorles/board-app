@@ -1,6 +1,6 @@
 const API = 'https://api.github.com/graphql';
 const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=repo,project&description=Board%20PWA';
-const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastAdd: 'pb.lastAdd', queue: 'pb.queue', grouped: 'pb.grouped', closeAfterAdd: 'pb.closeAfterAdd', view: 'pb.view', epicTab: 'pb.epicTab', epicViewSeen: 'pb.epicViewSeen' };
+const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastAdd: 'pb.lastAdd', coachSeen: 'pb.coachSeen', queue: 'pb.queue', grouped: 'pb.grouped', closeAfterAdd: 'pb.closeAfterAdd', view: 'pb.view', epicTab: 'pb.epicTab', epicViewSeen: 'pb.epicViewSeen' };
 const OPTION_COLORS = { GRAY: '#8b949e', BLUE: '#2f81f7', GREEN: '#2ea043', YELLOW: '#d29922', ORANGE: '#db6d28', RED: '#f85149', PINK: '#db61a2', PURPLE: '#a371f7' };
 const NO_EPIC = 'none';
 const NO_STATUS = '__none';
@@ -41,6 +41,39 @@ let renderedTab = null;
 let sheetOnClose = null;
 
 const $ = (s, r = document) => r.querySelector(s);
+
+const ICONS = {
+  search: ['<circle cx="11" cy="11" r="7"/>', '<path d="m20 20-3.5-3.5"/>'],
+  view: ['<path d="M3 6h18M7 12h10M10 18h4"/>'],
+  settings: ['<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>', '<circle cx="12" cy="12" r="3"/>'],
+  plus: ['<path d="M12 5v14M5 12h14"/>'],
+  chevron: ['<path d="m9 18 6-6-6-6"/>'],
+  more: ['<circle cx="5" cy="12" r="1.2"/>', '<circle cx="12" cy="12" r="1.2"/>', '<circle cx="19" cy="12" r="1.2"/>'],
+  top: ['<path d="M5 4h14M18 14l-6-6-6 6M12 8v12"/>'],
+  up: ['<path d="m5 12 7-7 7 7M12 19V5"/>'],
+  down: ['<path d="M12 5v14M19 12l-7 7-7-7"/>'],
+  external: ['<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'],
+  check: ['<path d="M20 6 9 17l-5-5"/>'],
+  undo: ['<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>', '<path d="M3 3v5h5"/>'],
+  x: ['<path d="M18 6 6 18M6 6l12 12"/>'],
+  pause: ['<path d="M9 5v14M15 5v14"/>'],
+  inbox: ['<path d="M22 12h-6l-2 3h-4l-2-3H2"/>', '<path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'],
+  trash: ['<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>'],
+};
+
+function icon(name, size = 20) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [k, v] of Object.entries({ width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'ico' })) svg.setAttribute(k, v);
+  svg.innerHTML = ICONS[name].join('');
+  return svg;
+}
+
+const EPIC_COLORS = ['#2f81f7', '#bf3989', '#1a9d8f', '#d4762c', '#8250df', '#7d9a1f', '#cf4040', '#3d8fb5'];
+const epicColor = id => {
+  const i = data.epics.findIndex(e => e.id === id);
+  return i === -1 ? 'var(--muted)' : EPIC_COLORS[i % EPIC_COLORS.length];
+};
+const swatch = id => h('span', { class: 'swatch', style: `--c:${epicColor(id)}`, 'aria-hidden': 'true' });
 const root = document.documentElement;
 
 function h(tag, attrs = {}, ...kids) {
@@ -73,9 +106,15 @@ async function gql(query, variables = {}) {
   if (scopes != null) tokenScopes = scopes.split(',').map(x => x.trim()).filter(Boolean);
   if (r.status === 401) throw fail('GitHub не принял токен — возможно, он истёк', 'auth');
   if (r.status >= 500 || r.status === 429) throw fail(`GitHub временно недоступен (${r.status})`, 'transient');
-  if (!r.ok) throw fail(`GitHub ответил ${r.status}`, 'http');
+  if (!r.ok) throw fail(r.status === 403 ? 'Не хватает прав токена или исчерпан лимит запросов — попробуй позже или замени токен' : `GitHub не принял запрос (код ${r.status}) — попробуй ещё раз`, 'http');
   const j = await r.json();
-  if (j.errors?.length) throw fail(j.errors.map(e => e.message).join('; '), 'gql');
+  if (j.errors?.length) {
+    const raw = j.errors.map(e => `${e.type || ''} ${e.message}`).join('; ');
+    const text = /NOT_FOUND|Could not resolve/i.test(raw) ? 'Задача не найдена на GitHub — возможно, её удалили. Обнови список'
+      : /FORBIDDEN|permission|scope/i.test(raw) ? 'Не хватает прав токена — замени его в настройках'
+      : 'GitHub отклонил изменение — обнови список и попробуй снова';
+    throw Object.assign(fail(text, 'gql'), { detail: raw });
+  }
   return j.data;
 }
 
@@ -116,7 +155,7 @@ const M = {
 async function load() {
   if (loading || !token || !project || netState === 'auth') return;
   loading = true;
-  $('#refreshBtn').classList.add('busy');
+  root.classList.add('loading');
   try {
     if (queue.length) await flush();
     if (queue.length && netState !== 'ok') return;
@@ -155,7 +194,7 @@ async function load() {
     else toast(e.message);
   } finally {
     loading = false;
-    $('#refreshBtn').classList.remove('busy');
+    root.classList.remove('loading');
   }
 }
 
@@ -182,9 +221,9 @@ function render() {
   const tabsEl = $('#tabs');
   const scrollLeft = tabsEl.scrollLeft;
   tabsEl.replaceChildren(...tabList.map(s => h('button', {
-    class: 'tab' + (s.id === current ? ' active' : '') + (s.id === NO_STATUS ? ' no-status' : ''), 'data-id': s.id, style: `--c:${s.color ? optionColor(s.color) : 'transparent'}`,
+    class: 'tab' + (s.id === current ? ' active' : '') + (s.id === NO_STATUS ? ' no-status' : ''), 'data-id': s.id, role: 'tab', 'aria-selected': String(s.id === current), style: `--c:${s.color ? optionColor(s.color) : 'transparent'}`,
     onclick: () => selectTab(s.id),
-  }, byEpic ? null : h('span', { class: 'dot' }), s.name, h('span', { class: 'n', text: s.n }))));
+  }, byEpic ? swatch(s.id) : h('span', { class: 'dot' }), s.name, h('span', { class: 'n', text: s.n }))));
   tabsEl.scrollLeft = scrollLeft;
   const tabMark = view + ':' + current;
   if (renderedTab !== tabMark) {
@@ -196,12 +235,21 @@ function render() {
   const viewBtn = $('#groupBtn');
   viewBtn.hidden = false;
   $('#searchBtn').hidden = false;
-  viewBtn.textContent = byEpic ? '◧' : grouped ? '⊞' : '☰';
   viewBtn.setAttribute('aria-label', 'Вид списка');
 
   const sections = byEpic ? epicSections() : statusSections();
-  $('#list').replaceChildren(...(sections.length ? sections : [h('div', { class: 'empty', text: 'Здесь пусто' })]));
+  $('#list').replaceChildren(...(sections.length ? sections : [emptyState()]));
+  if (!byEpic && tab !== doneStatus()?.id) $('#list .row')?.classList.add('first');
+  maybeCoach();
   syncHeaderHeight();
+}
+
+function emptyState() {
+  const isDone = tab === doneStatus()?.id;
+  const name = tab === NO_STATUS ? 'Без статуса' : statusName(tab);
+  return h('div', { class: 'empty' },
+    h('p', { class: 'empty-title', text: isDone ? 'Выполненных пока нет' : `В «${name}» пусто` }),
+    h('p', { class: 'muted', text: isDone ? 'Смахни задачу влево — она окажется здесь.' : 'Нажми «+», чтобы добавить задачу.' }));
 }
 
 function statusTabs() {
@@ -225,7 +273,7 @@ function groupSection(key, head, its, showEpic, more) {
   return h('section', { class: 'group' + (isCollapsed ? ' collapsed' : '') },
     h('div', { class: 'group-head' },
       h('button', { class: 'gh-toggle', onclick: () => toggleGroup(key) },
-        h('span', { class: 'chev', text: '›' }), ...head, h('span', { class: 'n', text: its.length })),
+        h('span', { class: 'chev' }, icon('chevron', 16)), ...head, h('span', { class: 'n', text: its.length })),
       more),
     isCollapsed ? null : h('div', { class: 'rows' }, its.map(it => rowEl(it, showEpic))));
 }
@@ -238,8 +286,8 @@ function statusSections() {
     const its = inTab.filter(i => epicKey(i) === g.key);
     if (!its.length) return null;
     const epic = data.epics.find(e => e.id === g.key);
-    return groupSection(g.key, [h('span', { class: 'gt', text: g.title })], its, false,
-      epic ? h('button', { class: 'gh-more', 'aria-label': 'Эпик: редактировать', onclick: () => openEpic(epic) }, '⋯') : null);
+    return groupSection(g.key, [swatch(g.key), h('span', { class: 'gt', text: g.title })], its, false,
+      epic ? h('button', { class: 'gh-more', 'aria-label': `Эпик «${epic.title}»: редактировать`, onclick: () => openEpic(epic) }, icon('more')) : null);
   }).filter(Boolean);
 }
 
@@ -249,7 +297,7 @@ function epicSections() {
   const open = kids.filter(k => statusKey(k) !== doneStatus()?.id).length;
   const bar = h('div', { class: 'epic-bar' },
     h('span', { class: 'muted', text: kids.length ? `${open} открыто · ${kids.length - open} готово` : 'Задач нет' }),
-    h('button', { class: 'gh-more', 'aria-label': 'Эпик: редактировать', onclick: () => openEpic(epic) }, '⋯'));
+    h('button', { class: 'gh-more', 'aria-label': 'Эпик: редактировать', onclick: () => openEpic(epic) }, icon('more')));
   const statuses = [...(kids.some(k => statusKey(k) === NO_STATUS) ? [{ id: NO_STATUS, name: 'Без статуса', color: null }] : []), ...data.statuses];
   const sections = statuses.map(s => {
     const its = kids.filter(k => statusKey(k) === s.id);
@@ -274,12 +322,12 @@ function setView(next, epicId) {
 }
 
 function openView() {
-  const opt = (label, hint, active, run) => h('button', { class: 'list-row' + (active ? ' on' : ''), onclick: () => { closeSheet(); run(); } },
+  const opt = (label, hint, active, run) => h('button', { class: 'list-row' + (active ? ' on' : ''), role: 'menuitemradio', 'aria-checked': String(active), onclick: () => { closeSheet(); run(); } },
     h('span', { class: 'lr-title' }, label, h('span', { class: 'lr-hint', text: hint })),
-    h('span', { class: 'check', text: active ? '✓' : '' }));
+    h('span', { class: 'check' }, active ? icon('check', 18) : null));
   openSheet(h('div', {},
-    h('h3', { text: 'Вид' }),
-    h('div', { class: 'list' },
+    h('h2', { text: 'Вид' }),
+    h('div', { class: 'list', role: 'menu' },
       opt('По статусам, с эпиками', 'Вкладки — статусы, внутри группы по эпикам', view === 'status' && grouped, () => { if (!grouped) toggleGrouping(); setView('status'); }),
       opt('По статусам, общим списком', 'Сквозной приоритет без деления на эпики', view === 'status' && !grouped, () => { if (grouped) toggleGrouping(); setView('status'); }),
       opt('По эпикам', 'Вкладки — эпики, внутри все задачи по статусам', view === 'epic', () => setView('epic')))));
@@ -299,15 +347,23 @@ function selectTab(id) {
   window.scrollTo({ top: 0 });
 }
 
+function bodyPreview(body) {
+  const line = body.split('\n').map(x => x.replace(/^[-*#>\s\[\]x]+/i, '').trim()).find(Boolean);
+  return line || '';
+}
+
 function rowEl(it, showEpic) {
   const isDone = doneStatus()?.id === it.status;
+  const preview = bodyPreview(it.body);
   const row = h('button', { class: 'row' + (it.pending ? ' pending' : '') },
-    h('span', { class: 'rt' }, h('span', { class: 'rtt', text: it.title }), showEpic && it.parent ? h('span', { class: 're', text: it.parent.title }) : null),
-    it.body.trim() ? h('span', { class: 'has', text: '≡' }) : null,
-    it.pending ? h('span', { class: 'spinner', 'aria-label': 'Сохраняется' }) : h('span', { class: 'rchev', text: '›' }));
+    h('span', { class: 'rt' },
+      h('span', { class: 'rtt', text: it.title }),
+      preview ? h('span', { class: 'rb', text: preview }) : null,
+      showEpic && it.parent ? h('span', { class: 're' }, swatch(it.parent.id), it.parent.title) : null),
+    it.pending ? h('span', { class: 'spinner', role: 'img', 'aria-label': 'Сохраняется' }) : null);
   const wrap = h('div', { class: 'swipe' },
-    h('div', { class: 'swipe-act left', text: '⇈ Наверх' }),
-    h('div', { class: 'swipe-act right', text: isDone ? 'Вернуть ↺' : 'Готово ✓' }),
+    h('div', { class: 'swipe-act left' }, icon('top', 18), 'Наверх'),
+    h('div', { class: 'swipe-act right' }, isDone ? 'Вернуть' : 'Выполнено', icon(isDone ? 'undo' : 'check', 18)),
     row);
   bindRowSwipe(wrap, row, it, isDone);
   return wrap;
@@ -430,13 +486,13 @@ function endDrag(cancelled = false) {
 function completeWithUndo(it) {
   const prev = it.status;
   setStatus(it, doneStatus().id);
-  toast('Готово', { action: 'Отменить', onAction: () => setStatus(it, prev) });
+  toast('Выполнено', { action: 'Отменить', onAction: () => setStatus(it, prev) });
 }
 
 function reopenFromDone(it) {
   const target = data.statuses.find(s => /^to\s*do$/i.test(s.name)) || data.statuses[0];
   setStatus(it, target.id);
-  toast(`Вернул в ${target.name}`, { action: 'Отменить', onAction: () => setStatus(it, doneStatus().id) });
+  toast(`Возвращено в ${target.name}`, { action: 'Отменить', onAction: () => setStatus(it, doneStatus().id) });
 }
 
 function toggleGroup(key) {
@@ -451,7 +507,7 @@ function renderConnect() {
   $('#fab').hidden = true;
   $('#groupBtn').hidden = true;
   $('#searchBtn').hidden = true;
-  const input = h('input', { type: 'password', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
+  const input = h('input', { type: 'password', name: 'token', 'aria-label': 'Токен GitHub', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
   const go = h('button', { class: 'btn primary wide' }, 'Подключить');
   const connect = async () => {
     const v = input.value.trim();
@@ -466,7 +522,7 @@ function renderConnect() {
   $('#list').replaceChildren(h('div', { class: 'setup' },
     h('h2', { text: 'Подключение к GitHub' }),
     h('p', {}, 'Нужен classic-токен со scope ', h('code', { text: 'repo' }), ' и ', h('code', { text: 'project' }), '. Он хранится только на этом устройстве.'),
-    h('a', { class: 'btn wide', href: TOKEN_URL, target: '_blank', rel: 'noopener' }, 'Создать токен на GitHub ↗'),
+    h('a', { class: 'btn wide', href: TOKEN_URL, target: '_blank', rel: 'noopener' }, 'Создать токен на GitHub'),
     input, go));
   syncHeaderHeight();
 }
@@ -496,9 +552,15 @@ function chooseProject(p) {
   load();
 }
 
+let sheetReturnFocus = null;
+
 function openSheet(content, onClose = null) {
+  if (!$('#sheetWrap').classList.contains('open')) sheetReturnFocus = document.activeElement;
+  $('#toast').classList.remove('show');
   sheetOnClose = onClose;
   const sheet = $('#sheet');
+  const heading = content.querySelector('h2');
+  if (heading) { heading.id = 'sheetTitle'; sheet.setAttribute('aria-labelledby', 'sheetTitle'); } else sheet.removeAttribute('aria-labelledby');
   sheet.style.transform = '';
   sheet.replaceChildren(h('div', { class: 'grab' }), content);
   sheet.scrollTop = 0;
@@ -516,6 +578,8 @@ function closeSheet(skipCallback = false) {
   $('#sheetWrap').classList.remove('open');
   root.classList.remove('locked');
   document.activeElement?.blur?.();
+  if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus({ preventScroll: true });
+  sheetReturnFocus = null;
   if (cb && !skipCallback) cb();
 }
 
@@ -615,13 +679,14 @@ function keepFocus(el) {
 }
 
 function chipGroup(options, value, onPick, { holdFocus = false } = {}) {
-  const wrap = h('div', { class: 'chips' });
+  const wrap = h('div', { class: 'chips', role: 'group' });
   for (const o of options) {
-    const b = h('button', { class: 'chip' + (o.id === value ? ' active' : ''), style: o.color ? `--c:${o.color}` : null },
-      o.color ? h('span', { class: 'dot' }) : null, o.name);
+    const b = h('button', { class: 'chip' + (o.id === value ? ' active' : ''), style: o.color ? `--c:${o.color}` : null, 'aria-pressed': String(o.id === value) },
+      o.color ? h('span', { class: 'dot' }) : o.swatch ? swatch(o.id) : null, o.name);
     b.addEventListener('click', () => {
-      wrap.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+      wrap.querySelectorAll('.chip').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
       b.classList.add('active');
+      b.setAttribute('aria-pressed', 'true');
       onPick(o.id);
     });
     if (holdFocus) keepFocus(b);
@@ -657,27 +722,53 @@ function autoGrow(ta) {
   return fit;
 }
 
+const findStatus = re => data.statuses.find(x => re.test(x.name));
+
+function quickMove(it, target, label) {
+  const prev = it.status;
+  closeSheet();
+  setStatus(it, target.id);
+  toast(label, { action: 'Отменить', onAction: () => setStatus(it, prev) });
+}
+
 function openTask(it) {
-  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences', 'aria-label': 'Название задачи' });
   title.value = it.title;
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } });
-  const body = h('textarea', { rows: '4', placeholder: 'Детали, ссылки, чек-лист…', autocapitalize: 'sentences' });
+  const body = h('textarea', { rows: '4', placeholder: 'Детали, ссылки, чек-лист…', autocapitalize: 'sentences', autocomplete: 'off', 'aria-label': 'Заметки' });
   body.value = it.body;
-  openSheet(h('div', {},
+  const done = doneStatus();
+  const isDone = done?.id === it.status;
+  const quick = [];
+  if (isDone) {
+    const back = findStatus(/^to\s*do$/i) || data.statuses[0];
+    quick.push(h('button', { class: 'qa primary', onclick: () => quickMove(it, back, `Возвращено в ${back.name}`) }, icon('undo'), 'Вернуть в работу'));
+  } else if (done) {
+    quick.push(h('button', { class: 'qa primary', onclick: () => { closeSheet(); completeWithUndo(it); } }, icon('check'), 'Выполнено'));
+  }
+  for (const [re, ico] of [[/^pause$/i, 'pause'], [/^backlog$/i, 'inbox']]) {
+    const st = findStatus(re);
+    if (st && st.id !== it.status && !isDone) quick.push(h('button', { class: 'qa', onclick: () => quickMove(it, st, `Перенесено в ${st.name}`) }, icon(ico), st.name));
+  }
+  const meta = [it.number ? `#${it.number}` : 'Сохраняется…', it.parent ? it.parent.title : null].filter(Boolean).join(' · ');
+  openSheet(h('div', { class: 'task' },
+    h('div', { class: 'sheet-head' },
+      h('span', { class: 'sh-meta' }, it.parent ? swatch(it.parent.id) : null, meta),
+      h('button', { class: 'link-btn', onclick: () => closeSheet() }, 'Закрыть')),
     title,
+    quick.length ? h('div', { class: 'quick' + (quick.length === 1 ? ' one' : '') }, quick) : null,
     h('div', { class: 'field-label', text: 'Статус' }),
-    chipGroup(statusOptions(), it.status, id => { if (id !== it.status) { setStatus(it, id); toast(`→ ${statusName(id)}`); } }),
+    chipGroup(statusOptions(), it.status, id => { if (id !== it.status) { setStatus(it, id); toast(`Перенесено в ${statusName(id)}`); } }),
     h('div', { class: 'field-label', text: 'Эпик' }),
-    chipGroup(epicOptions(), epicKey(it), id => setEpic(it, id === NO_EPIC ? null : id)),
+    chipGroup(epicOptions().map(o => ({ ...o, swatch: true })), epicKey(it), id => setEpic(it, id === NO_EPIC ? null : id)),
     h('div', { class: 'field-label', text: 'Заметки' }),
     body,
     h('div', { class: 'actions' },
-      h('button', { class: 'btn', onclick: () => { move(it, 'top'); toast('Поднято наверх'); } }, '⇈ Наверх'),
-      h('button', { class: 'btn', 'aria-label': 'Выше', onclick: () => move(it, 'up') }, '↑'),
-      h('button', { class: 'btn', 'aria-label': 'Ниже', onclick: () => move(it, 'down') }, '↓'),
-      it.url ? h('a', { class: 'btn', href: it.url, target: '_blank', rel: 'noopener' }, `#${it.number} ↗`) : h('span')),
-    h('button', { class: 'btn primary wide', onclick: () => closeSheet() }, 'Готово'),
-    h('button', { class: 'btn danger wide', onclick: () => removeTask(it) }, 'Удалить задачу')),
+      h('button', { class: 'btn', onclick: () => { move(it, 'top'); toast('Поднято наверх'); } }, icon('top', 18), 'Наверх'),
+      h('button', { class: 'btn', 'aria-label': 'Выше', onclick: () => move(it, 'up') }, icon('up', 18)),
+      h('button', { class: 'btn', 'aria-label': 'Ниже', onclick: () => move(it, 'down') }, icon('down', 18)),
+      it.url ? h('a', { class: 'btn', href: it.url, target: '_blank', rel: 'noopener' }, `#${it.number}`, icon('external', 16)) : h('span')),
+    h('button', { class: 'btn danger wide delete', onclick: () => removeTask(it) }, icon('trash', 18), 'Удалить задачу')),
     () => {
       const t = title.value.trim();
       if (t && (t !== it.title || body.value !== it.body)) saveText(it, t, body.value);
@@ -692,13 +783,13 @@ function openNew() {
   const current = ranked.findIndex(o => o.id === epicId);
   if (current > 0) ranked.unshift(...ranked.splice(current, 1));
   let statusId = view === 'epic' || tab === NO_STATUS ? defaultStatusId() : tab;
-  const title = h('textarea', { class: 't-title new-title', rows: '1', placeholder: 'Что нужно сделать?', enterkeyhint: 'next', autocapitalize: 'sentences' });
-  const body = h('textarea', { class: 'new-body', rows: '1', placeholder: 'Описание', autocapitalize: 'sentences' });
+  const title = h('textarea', { class: 't-title new-title', rows: '1', placeholder: 'Что нужно сделать?', 'aria-label': 'Название задачи', autocomplete: 'off', enterkeyhint: 'next', autocapitalize: 'sentences' });
+  const body = h('textarea', { class: 'new-body', rows: '1', placeholder: 'Описание…', 'aria-label': 'Описание', autocomplete: 'off', autocapitalize: 'sentences' });
   const top = keepFocus(h('input', { type: 'checkbox' }));
   const closeAfter = keepFocus(h('input', { type: 'checkbox' }));
   closeAfter.checked = store.get(LS.closeAfterAdd, false);
   closeAfter.addEventListener('change', () => store.set(LS.closeAfterAdd, closeAfter.checked));
-  const add = keepFocus(h('button', { class: 'btn primary add-btn' }, 'Добавить'));
+  const add = keepFocus(h('button', { class: 'btn primary add-btn' }, icon('plus', 18), 'Добавить'));
   const fitTitle = autoGrow(title);
   const fitBody = autoGrow(body);
   const submit = () => {
@@ -717,10 +808,10 @@ function openNew() {
   add.addEventListener('click', submit);
   title.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); body.focus(); } });
   const line = (label, chips) => h('div', { class: 'chip-line' }, h('span', { class: 'cl-label', text: label }), chips);
-  const epicChips = chipGroup(ranked, epicId, id => { epicId = id; }, { holdFocus: true });
+  const epicChips = chipGroup(ranked.map(o => ({ ...o, swatch: true })), epicId, id => { epicId = id; }, { holdFocus: true });
   const statusChips = chipGroup(statusOptions(), statusId, id => { statusId = id; }, { holdFocus: true });
   openSheet(h('div', { class: 'new-task' },
-    h('div', { class: 'new-head' }, h('h3', { text: 'Новая задача' }), add),
+    h('div', { class: 'new-head' }, h('h2', { text: 'Новая задача' }), add),
     title,
     body,
     line('Эпик', epicChips),
@@ -730,31 +821,37 @@ function openNew() {
       keepFocus(h('label', { class: 'toggle' }, closeAfter, 'Закрыть после')))));
   for (const chips of [epicChips, statusChips]) {
     const active = chips.querySelector('.chip.active');
-    if (active) chips.scrollLeft = active.offsetLeft - chips.offsetLeft - 8;
+    const prev = active?.previousElementSibling;
+    chips.scrollLeft = prev ? prev.offsetLeft - chips.offsetLeft : 0;
   }
   title.focus();
 }
 
 function openSettings() {
+  const extra = extraScopes();
   openSheet(h('div', {},
-    h('h3', { text: 'Настройки' }),
-    h('p', { class: 'muted', text: project ? `Доска: ${project.title}` : 'Доска не выбрана' }),
-    tokenScopes ? h('p', { class: 'muted' + (extraScopes().length ? ' warn' : ''), text: extraScopes().length
-      ? `Права токена: ${tokenScopes.join(', ')}. Лишние: ${extraScopes().join(', ')} — лучше выпустить новый только с repo и project.`
+    h('h2', { text: 'Настройки' }),
+    data ? h('div', { class: 'list' },
+      h('button', { class: 'list-row', onclick: openView }, h('span', { class: 'lr-title', text: 'Вид списка' }), h('span', { class: 'rchev' }, icon('chevron', 18))),
+      h('button', { class: 'list-row', onclick: openEpics }, h('span', { class: 'lr-title', text: 'Эпики' }), h('span', { class: 'n', text: data.epics.length }), h('span', { class: 'rchev' }, icon('chevron', 18))),
+      h('button', { class: 'list-row', onclick: openStatuses }, h('span', { class: 'lr-title', text: 'Статусы' }), h('span', { class: 'n', text: data.statuses.length }), h('span', { class: 'rchev' }, icon('chevron', 18)))) : null,
+    h('div', { class: 'field-label', text: 'Жесты' }),
+    h('p', { class: 'muted small', text: 'Свайп задачи влево — выполнено, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Свайп от края экрана или по заголовкам — соседняя вкладка. Потяни список вниз, чтобы обновить.' }),
+    h('div', { class: 'field-label', text: 'GitHub' }),
+    h('p', { class: 'muted small', text: project ? `Доска: ${project.title}` : 'Доска не выбрана' }),
+    tokenScopes ? h('p', { class: 'small' + (extra.length ? ' warn' : ' muted'), text: extra.length
+      ? `Права токена: ${tokenScopes.join(', ')}. Лишние: ${extra.join(', ')} — лучше выпустить новый только с repo и project.`
       : `Права токена: ${tokenScopes.join(', ')} — ничего лишнего.` }) : null,
-    h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Свайп от края экрана или по заголовкам — соседняя вкладка. Потяни список вниз, чтобы обновить.' }),
-    token ? h('button', { class: 'btn wide', onclick: openReauth }, 'Заменить токен') : null,
-    data ? h('button', { class: 'btn wide', onclick: openEpics }, 'Эпики…') : null,
-    data ? h('button', { class: 'btn wide', onclick: openStatuses }, 'Статусы…') : null,
-    data ? h('button', { class: 'btn wide', onclick: openView }, 'Вид списка…') : null,
-    token ? h('button', { class: 'btn wide', onclick: async () => { closeSheet(); try { await pickProject(); } catch (e) { toast(e.message); } } }, 'Сменить доску') : null,
+    token ? h('div', { class: 'list' },
+      h('button', { class: 'list-row', onclick: async () => { closeSheet(); try { await pickProject(); } catch (e) { toast(e.message); } } }, h('span', { class: 'lr-title', text: 'Сменить доску' }), h('span', { class: 'rchev' }, icon('chevron', 18))),
+      h('button', { class: 'list-row', onclick: openReauth }, h('span', { class: 'lr-title', text: 'Заменить токен' }), h('span', { class: 'rchev' }, icon('chevron', 18)))) : null,
     token ? h('button', { class: 'btn danger wide', onclick: disconnect }, 'Отключить GitHub на этом устройстве') : null));
 }
 
 const childrenOf = epicId => data.items.filter(it => epicKey(it) === epicId);
 
 function openEpics() {
-  const input = h('input', { type: 'text', placeholder: 'Название нового эпика', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const input = h('input', { type: 'text', name: 'epic', placeholder: 'Название нового эпика…', 'aria-label': 'Название нового эпика', autocomplete: 'off', enterkeyhint: 'done', autocapitalize: 'sentences' });
   const create = async () => {
     const t = input.value.trim();
     if (!t) { input.focus(); return; }
@@ -765,13 +862,14 @@ function openEpics() {
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
   openSheet(h('div', {},
-    h('h3', { text: 'Эпики' }),
+    h('h2', { text: 'Эпики' }),
     h('div', { class: 'list' }, [...data.epics, { id: NO_EPIC, title: 'Без эпика', virtual: true }].map(e => {
       const n = childrenOf(e.id).length;
       return h('button', { class: 'list-row', onclick: () => openEpic(e) },
+        swatch(e.id),
         h('span', { class: 'lr-title' + (e.virtual ? ' muted' : ''), text: e.title }),
         h('span', { class: 'n', text: n }),
-        h('span', { class: 'rchev', text: '›' }));
+        h('span', { class: 'rchev' }, icon('chevron', 18)));
     })),
     h('div', { class: 'field-label', text: 'Новый эпик' }),
     h('div', { class: 'inline-add' }, input, h('button', { class: 'btn primary', onclick: create }, 'Создать'))));
@@ -780,9 +878,9 @@ function openEpics() {
 function openEpic(epic) {
   const isVirtual = epic.id === NO_EPIC;
   const kids = childrenOf(epic.id);
-  const selected = new Set(kids.filter(k => !k.pending).map(k => k.id));
+  const selected = new Set();
   let target = null;
-  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences', 'aria-label': 'Название эпика' });
   title.value = epic.title;
   title.readOnly = isVirtual;
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } });
@@ -791,7 +889,7 @@ function openEpic(epic) {
     moveBtn.textContent = selected.size ? `Перенести ${selected.size} ${plural(selected.size, ['задачу', 'задачи', 'задач'])}` : 'Выбери задачи';
     moveBtn.disabled = !selected.size || target === null;
   };
-  const targets = [...data.epics.filter(e => e.id !== epic.id).map(e => ({ id: e.id, name: e.title })), ...(isVirtual ? [] : [{ id: NO_EPIC, name: 'Без эпика' }])];
+  const targets = [...data.epics.filter(e => e.id !== epic.id).map(e => ({ id: e.id, name: e.title, swatch: true })), ...(isVirtual ? [] : [{ id: NO_EPIC, name: 'Без эпика', swatch: true }])];
   const allBox = h('input', { type: 'checkbox' });
   allBox.checked = selected.size === kids.length && kids.length > 0;
   const boxes = [];
@@ -829,7 +927,7 @@ function openEpic(epic) {
       targets.length ? chipGroup(targets, null, id => { target = id; updateMoveBtn(); }) : h('p', { class: 'muted', text: 'Нет других эпиков' }),
       moveBtn) : h('p', { class: 'muted', text: 'Задач в этом эпике нет' }),
     isVirtual ? null : h('div', { class: 'actions two' },
-      epic.url ? h('a', { class: 'btn', href: epic.url, target: '_blank', rel: 'noopener' }, `#${epic.number} ↗`) : h('span'),
+      epic.url ? h('a', { class: 'btn', href: epic.url, target: '_blank', rel: 'noopener' }, `#${epic.number}`, icon('external', 16)) : h('span'),
       h('button', { class: 'btn danger', onclick: () => closeEpic(epic) }, 'Закрыть эпик'))),
     () => {
       const t = title.value.trim();
@@ -896,10 +994,11 @@ async function closeEpic(epic) {
 
 function openStatuses() {
   const draft = data.statuses.map(s => ({ id: s.id, name: s.name, color: s.color || 'GRAY', description: s.description || '' }));
+  const initial = JSON.stringify(draft);
   const listEl = h('div', { class: 'list' });
   const draw = () => {
     listEl.replaceChildren(...draft.map((s, i) => {
-      const name = h('input', { type: 'text', class: 'st-name', autocapitalize: 'sentences', enterkeyhint: 'done' });
+      const name = h('input', { type: 'text', class: 'st-name', 'aria-label': 'Название статуса', autocomplete: 'off', autocapitalize: 'sentences', enterkeyhint: 'done' });
       name.value = s.name;
       name.addEventListener('input', () => { s.name = name.value; });
       const count = s.id ? data.items.filter(it => it.status === s.id).length : 0;
@@ -907,12 +1006,12 @@ function openStatuses() {
         h('button', { class: 'st-dot', style: `--c:${optionColor(s.color)}`, 'aria-label': 'Цвет', onclick: () => { s.color = COLOR_ORDER[(COLOR_ORDER.indexOf(s.color) + 1) % COLOR_ORDER.length]; draw(); } }),
         name,
         h('span', { class: 'n', text: count }),
-        h('button', { class: 'st-btn', 'aria-label': 'Выше', disabled: i === 0 ? true : null, onclick: () => { [draft[i - 1], draft[i]] = [draft[i], draft[i - 1]]; draw(); } }, '↑'),
-        h('button', { class: 'st-btn', 'aria-label': 'Ниже', disabled: i === draft.length - 1 ? true : null, onclick: () => { [draft[i + 1], draft[i]] = [draft[i], draft[i + 1]]; draw(); } }, '↓'),
+        h('button', { class: 'st-btn', 'aria-label': 'Выше', disabled: i === 0 ? true : null, onclick: () => { [draft[i - 1], draft[i]] = [draft[i], draft[i - 1]]; draw(); } }, icon('up', 18)),
+        h('button', { class: 'st-btn', 'aria-label': 'Ниже', disabled: i === draft.length - 1 ? true : null, onclick: () => { [draft[i + 1], draft[i]] = [draft[i], draft[i + 1]]; draw(); } }, icon('down', 18)),
         h('button', { class: 'st-btn danger', 'aria-label': 'Удалить', onclick: () => {
           if (count && !confirm(`В статусе «${s.name}» ${count} ${plural(count, ['задача', 'задачи', 'задач'])}. После сохранения они попадут во вкладку «Без статуса». Удалить?`)) return;
           draft.splice(i, 1); draw();
-        } }, '×'));
+        } }, icon('x', 20)));
     }));
   };
   draw();
@@ -928,11 +1027,12 @@ function openStatuses() {
     } catch (e) { toast('Не сохранилось: ' + e.message); }
   };
   openSheet(h('div', {},
-    h('h3', { text: 'Статусы' }),
+    h('h2', { text: 'Статусы' }),
     h('p', { class: 'muted small', text: 'Тап по кружку меняет цвет. Порядок здесь — порядок вкладок и колонок на доске.' }),
     listEl,
-    h('button', { class: 'btn wide', onclick: () => { draft.push({ id: null, name: 'Новый статус', color: 'GRAY', description: '' }); draw(); listEl.lastChild?.querySelector('input')?.select(); } }, '+ Добавить статус'),
-    h('button', { class: 'btn primary wide', onclick: save }, 'Сохранить')));
+    h('button', { class: 'btn wide', onclick: () => { draft.push({ id: null, name: 'Новый статус', color: 'GRAY', description: '' }); draw(); listEl.lastChild?.querySelector('input')?.select(); } }, icon('plus', 18), 'Добавить статус'),
+    h('button', { class: 'btn primary wide', onclick: save }, 'Сохранить')),
+    () => { if (JSON.stringify(draft) !== initial && confirm('Сохранить изменения статусов?')) save(); });
 }
 
 function disconnect() {
@@ -1093,14 +1193,14 @@ function updateNet() {
 function onBadge() {
   if (netState === 'auth') return openReauth();
   if (netState === 'offline') {
-    toast(queue.length ? `Изменений в очереди: ${queue.length}. Отправлю, когда появится связь` : 'Нет связи с GitHub — показываю сохранённое');
+    toast(queue.length ? `Изменений в очереди: ${queue.length}. Отправятся, когда появится связь` : 'Нет связи с GitHub — на экране сохранённая версия');
     flush();
     load();
   }
 }
 
 function openReauth() {
-  const input = h('input', { type: 'password', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
+  const input = h('input', { type: 'password', name: 'token', 'aria-label': 'Токен GitHub', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
   const save = h('button', { class: 'btn primary wide' }, 'Сохранить');
   const go = async () => {
     const v = input.value.trim();
@@ -1126,9 +1226,9 @@ function openReauth() {
   save.addEventListener('click', go);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
   openSheet(h('div', {},
-    h('h3', { text: 'Новый токен' }),
-    h('p', { class: 'muted', text: queue.length ? `GitHub перестал принимать токен. Несохранённые изменения (${queue.length}) никуда не делись — отправлю их с новым токеном.` : 'GitHub перестал принимать токен — скорее всего, истёк срок. Создай новый с правами repo и project.' }),
-    h('a', { class: 'btn wide', href: TOKEN_URL, target: '_blank', rel: 'noopener' }, 'Создать токен на GitHub ↗'),
+    h('h2', { text: 'Новый токен' }),
+    h('p', { class: 'muted', text: queue.length ? `GitHub перестал принимать токен. Несохранённые изменения (${queue.length}) никуда не делись — они отправятся с новым токеном.` : 'GitHub перестал принимать токен — скорее всего, истёк срок. Создай новый с правами repo и project.' }),
+    h('a', { class: 'btn wide', href: TOKEN_URL, target: '_blank', rel: 'noopener' }, 'Создать токен на GitHub'),
     input, save));
   input.focus();
 }
@@ -1211,12 +1311,12 @@ function highlight(text, q) {
 }
 
 function openSearch() {
-  const input = h('input', { type: 'search', class: 'search-input', placeholder: 'Название, описание, эпик…', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+  const input = h('input', { type: 'search', name: 'q', class: 'search-input', 'aria-label': 'Поиск задач', autocomplete: 'off', placeholder: 'Название, описание, эпик…', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
   const results = h('div', { class: 'search-results' });
   const doneId = doneStatus()?.id;
   const draw = () => {
     const q = input.value.trim();
-    if (!q) { results.replaceChildren(h('p', { class: 'muted small', text: `Ищу по всем ${data.items.length} задачам, включая Done` })); return; }
+    if (!q) { results.replaceChildren(h('p', { class: 'muted small', text: `Поиск по всем ${data.items.length} задачам, включая Done` })); return; }
     const found = searchItems(q);
     results.replaceChildren(
       h('p', { class: 'muted small', text: found.length ? `Найдено: ${found.length}` : 'Ничего не нашлось' }),
@@ -1226,8 +1326,9 @@ function openSearch() {
           h('span', { class: 'lr-title' },
             h('span', { class: 'sr-title' }, highlight(it.title, q)),
             h('span', { class: 'lr-hint' },
-              h('span', { class: 'dot', style: `--c:${st ? optionColor(st.color) : 'transparent'}` }), ' ', st?.name ?? 'Без статуса', it.parent ? ' · ' + it.parent.title : '')),
-          h('span', { class: 'rchev', text: '›' }));
+              h('span', { class: 'dot', style: `--c:${st ? optionColor(st.color) : 'transparent'}` }), st?.name ?? 'Без статуса',
+              it.parent ? [h('span', { class: 'sep', text: '·' }), swatch(it.parent.id), it.parent.title] : null)),
+          h('span', { class: 'rchev' }, icon('chevron', 18)));
       })) : null);
   };
   input.addEventListener('input', draw);
@@ -1295,24 +1396,53 @@ function bindTabSwipe() {
 }
 
 let toastTimer;
+let toastMs = 0;
+function hideToastLater() {
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('#toast').classList.remove('show'), toastMs);
+}
+
 function toast(msg, { action, onAction } = {}) {
   const t = $('#toast');
   t.replaceChildren(h('span', { text: msg }));
   t.classList.toggle('has-action', !!action);
   if (action) t.append(h('button', { onclick: () => { t.classList.remove('show'); onAction(); } }, action));
   t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), action ? 4500 : 2200);
+  toastMs = action ? 6000 : 2400;
+  hideToastLater();
+}
+
+function maybeCoach() {
+  if (store.get(LS.coachSeen) || !data || root.classList.contains('locked')) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { store.set(LS.coachSeen, true); return; }
+  const wrap = $('#list .swipe');
+  if (!wrap) return;
+  store.set(LS.coachSeen, true);
+  const row = wrap.querySelector('.row');
+  const right = wrap.querySelector('.swipe-act.right'), left = wrap.querySelector('.swipe-act.left');
+  const step = (x, vis, delay) => setTimeout(() => {
+    row.classList.add('snap');
+    row.style.transform = x ? `translateX(${x}px)` : '';
+    right.style.visibility = vis === 'right' ? 'visible' : 'hidden';
+    left.style.visibility = vis === 'left' ? 'visible' : 'hidden';
+  }, delay);
+  step(-96, 'right', 700);
+  step(0, null, 1500);
+  step(96, 'left', 1900);
+  step(0, null, 2700);
+  setTimeout(() => toast('Свайп влево — выполнено, вправо — наверх'), 2900);
 }
 
 $('#fab').addEventListener('click', () => data && openNew());
-$('#refreshBtn').addEventListener('click', load);
 $('#groupBtn').addEventListener('click', () => data && openView());
 $('#settingsBtn').addEventListener('click', openSettings);
 $('#searchBtn').addEventListener('click', () => data && openSearch());
 $('#netBadge').addEventListener('click', onBadge);
 window.addEventListener('online', () => { flush(); load(); });
 $('#sheetWrap').addEventListener('click', e => { if (e.target.id === 'sheetWrap') closeSheet(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#sheetWrap').classList.contains('open')) closeSheet(); });
+$('#toast').addEventListener('touchstart', () => clearTimeout(toastTimer), { passive: true });
+$('#toast').addEventListener('touchend', hideToastLater);
 document.addEventListener('touchstart', () => {}, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;

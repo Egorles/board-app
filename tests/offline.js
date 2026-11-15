@@ -93,7 +93,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   check('expired token: badge asks for token', /Токен/.test(await badge()), await badge());
   await page.tap('#netBadge');
   await wait(300);
-  check('expired token: reauth sheet opens', !!(await page.$('#sheet h3:text-is("Новый токен")')));
+  check('expired token: reauth sheet opens', !!(await page.$('#sheet h2:text-is("Новый токен")')));
   await page.fill('#sheet input[type=password]', 'new-token');
   await page.tap('#sheet button:has-text("Сохранить")');
   await wait(1500);

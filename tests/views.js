@@ -22,7 +22,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
     return { h: s.getBoundingClientRect().height, lines, add: !!s.querySelector('.new-head .add-btn') };
   });
   check('new task sheet compact (<= 360px)', box.h <= 360, `h=${Math.round(box.h)}`);
-  check('chip lines single row, horizontally scrollable', box.lines.length === 2 && box.lines.every(l => l.wrap === 'nowrap' && l.h < 40) && box.lines[0].overflow, JSON.stringify(box.lines));
+  check('chip lines single row, horizontally scrollable', box.lines.length === 2 && box.lines.every(l => l.wrap === 'nowrap' && l.h <= 44) && box.lines[0].overflow, JSON.stringify(box.lines));
   check('add button in header', box.add);
   await page.screenshot({ path: `${OUT}/c1-new.png` });
   await page.$eval('#sheet .chip-line .chips', c => { c.scrollLeft = 400; });

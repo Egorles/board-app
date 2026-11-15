@@ -4,7 +4,7 @@ const fs = require('fs');
 const PORT = process.env.PORT || '8787';
 const OUT = path.join(__dirname, 'out');
 fs.mkdirSync(OUT, { recursive: true });
-const suites = (process.argv.slice(2).length ? process.argv.slice(2) : ['gestures', 'features', 'views', 'offline']);
+const suites = (process.argv.slice(2).length ? process.argv.slice(2) : ['gestures', 'features', 'views', 'offline', 'polish']);
 const server = spawn(process.execPath, [path.join(__dirname, 'server.js'), PORT], { stdio: ['ignore', 'pipe', 'inherit'] });
 server.stdout.once('data', () => {
   let failed = 0;
