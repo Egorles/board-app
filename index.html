@@ -40,6 +40,21 @@ button,.tab,.chip,.row,.group-head,.btn{cursor:pointer;-webkit-user-select:none;
 .icon-btn{border:0;background:transparent;width:44px;height:44px;border-radius:22px;font-size:21px;color:var(--accent);display:grid;place-items:center}
 .icon-btn:active{background:var(--surface2)}
 .icon-btn[hidden]{display:none}
+.icon-btn{width:40px}
+.net-badge{position:fixed;left:max(16px,env(safe-area-inset-left));bottom:calc(34px + env(safe-area-inset-bottom));z-index:5;border:.5px solid var(--border);border-radius:16px;height:32px;padding:0 14px;font-size:14px;font-weight:600;background:var(--surface);color:var(--muted);white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+.net-badge[hidden]{display:none}
+.net-badge.offline{color:#d29922;border-color:#d2992288}
+.net-badge.auth{color:var(--danger);border-color:var(--danger)}
+html.offline .row.pending .spinner{animation:none;border-style:dashed}
+#list{transition:transform .22s cubic-bezier(.2,.8,.2,1),opacity .22s}
+#list.tab-swiping{transition:none}
+.search-input{-webkit-appearance:none;appearance:none;width:100%;border:1px solid var(--border);background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:17px;outline:none}
+.search-input:focus{border-color:var(--accent)}
+.search-results .list{margin-top:4px}
+.search-row .lr-hint{display:flex;align-items:center;gap:4px}
+.search-row.done .sr-title{color:var(--muted);text-decoration:line-through}
+mark{background:#d2992255;color:inherit;border-radius:3px;padding:0 1px}
+.warn{color:#d29922}
 .icon-btn.busy{animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:6px max(16px,env(safe-area-inset-left)) 10px;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
@@ -169,6 +184,7 @@ code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surf
 <header class="top" id="top">
   <div class="title-row">
     <h1 id="title">Board</h1>
+    <button class="icon-btn" id="searchBtn" aria-label="Поиск"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg></button>
     <button class="icon-btn" id="groupBtn" aria-label="Группировка по эпикам"></button>
     <button class="icon-btn" id="refreshBtn" aria-label="Обновить">↻</button>
     <button class="icon-btn" id="settingsBtn" aria-label="Настройки">⚙︎</button>
@@ -178,6 +194,7 @@ code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surf
 <div class="ptr" id="ptr"><span>↓</span></div>
 <main id="list"></main>
 <button class="fab" id="fab" aria-label="Новая задача" hidden>+</button>
+<button class="net-badge" id="netBadge" hidden></button>
 <div class="sheet-wrap" id="sheetWrap"><div class="sheet" id="sheet"></div></div>
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>

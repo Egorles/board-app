@@ -1,6 +1,6 @@
 const API = 'https://api.github.com/graphql';
 const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=repo,project&description=Board%20PWA';
-const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastEpic: 'pb.lastEpic', grouped: 'pb.grouped', closeAfterAdd: 'pb.closeAfterAdd', view: 'pb.view', epicTab: 'pb.epicTab', epicViewSeen: 'pb.epicViewSeen' };
+const LS = { token: 'pb.token', project: 'pb.project', cache: 'pb.cache', tab: 'pb.tab', collapsed: 'pb.collapsed', lastAdd: 'pb.lastAdd', queue: 'pb.queue', grouped: 'pb.grouped', closeAfterAdd: 'pb.closeAfterAdd', view: 'pb.view', epicTab: 'pb.epicTab', epicViewSeen: 'pb.epicViewSeen' };
 const OPTION_COLORS = { GRAY: '#8b949e', BLUE: '#2f81f7', GREEN: '#2ea043', YELLOW: '#d29922', ORANGE: '#db6d28', RED: '#f85149', PINK: '#db61a2', PURPLE: '#a371f7' };
 const NO_EPIC = 'none';
 const NO_STATUS = '__none';
@@ -8,6 +8,10 @@ const COLOR_ORDER = Object.keys(OPTION_COLORS);
 const SWIPE_TRIGGER = 88;
 const PULL_TRIGGER = 70;
 const LONG_PRESS_MS = 380;
+const EDGE = 22;
+const TAB_SWIPE = 60;
+const RETRY_MS = 15000;
+const ALLOWED_SCOPES = ['repo', 'project'];
 
 const store = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -24,7 +28,13 @@ let grouped = store.get(LS.grouped, true);
 let view = store.get(LS.view, 'status');
 let epicTab = store.get(LS.epicTab);
 let drag = null;
-const pendingCreates = new Set();
+let queue = store.get(LS.queue, []);
+let flushing = null;
+let doneWhileLoading = [];
+let netState = 'ok';
+let retryTimer = null;
+let tokenScopes = null;
+let tabSwipeAt = 0;
 let loading = false;
 let lastLoad = 0;
 let renderedTab = null;
@@ -47,18 +57,29 @@ function h(tag, attrs = {}, ...kids) {
   return e;
 }
 
+const fail = (message, kind) => Object.assign(new Error(message), { kind });
+const retryable = e => e.kind === 'network' || e.kind === 'transient';
+
 async function gql(query, variables = {}) {
-  const r = await fetch(API, {
-    method: 'POST',
-    headers: { Authorization: `bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (r.status === 401) throw new Error('GitHub не принял токен (401)');
-  if (!r.ok) throw new Error(`GitHub ответил ${r.status}`);
+  let r;
+  try {
+    r = await fetch(API, {
+      method: 'POST',
+      headers: { Authorization: `bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch { throw fail('Нет связи с GitHub', 'network'); }
+  const scopes = r.headers.get('X-OAuth-Scopes');
+  if (scopes != null) tokenScopes = scopes.split(',').map(x => x.trim()).filter(Boolean);
+  if (r.status === 401) throw fail('GitHub не принял токен — возможно, он истёк', 'auth');
+  if (r.status >= 500 || r.status === 429) throw fail(`GitHub временно недоступен (${r.status})`, 'transient');
+  if (!r.ok) throw fail(`GitHub ответил ${r.status}`, 'http');
   const j = await r.json();
-  if (j.errors?.length) throw new Error(j.errors.map(e => e.message).join('; '));
+  if (j.errors?.length) throw fail(j.errors.map(e => e.message).join('; '), 'gql');
   return j.data;
 }
+
+const extraScopes = () => (tokenScopes || []).filter(x => !ALLOWED_SCOPES.includes(x));
 
 const ITEMS_Q = `query($id:ID!,$after:String){node(id:$id){... on ProjectV2{title
   field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name color description}}}
@@ -66,7 +87,7 @@ const ITEMS_Q = `query($id:ID!,$after:String){node(id:$id){... on ProjectV2{titl
   items(first:100,after:$after){pageInfo{hasNextPage endCursor}
     nodes{id isArchived
       fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId}}
-      content{__typename ... on Issue{id number title body state url parent{id number title}}}}}}}}`;
+      content{__typename ... on Issue{id number title body state url createdAt parent{id number title}}}}}}}}`;
 
 const EPICS_Q = `query($id:ID!){node(id:$id){... on Repository{label(name:"epic"){id}
   issues(first:100,labels:["epic"],states:[OPEN],orderBy:{field:CREATED_AT,direction:ASC}){nodes{id number title url}}}}}`;
@@ -93,10 +114,13 @@ const M = {
 };
 
 async function load() {
-  if (loading || !token || !project) return;
+  if (loading || !token || !project || netState === 'auth') return;
   loading = true;
   $('#refreshBtn').classList.add('busy');
   try {
+    if (queue.length) await flush();
+    if (queue.length && netState !== 'ok') return;
+    doneWhileLoading = [];
     let after = null, meta = null;
     const items = [];
     do {
@@ -106,7 +130,7 @@ async function load() {
         const c = n.content;
         if (n.isArchived || c?.__typename !== 'Issue') continue;
         items.push({
-          itemId: n.id, id: c.id, number: c.number, title: c.title, body: c.body || '', state: c.state, url: c.url,
+          itemId: n.id, id: c.id, number: c.number, title: c.title, body: c.body || '', state: c.state, url: c.url, createdAt: c.createdAt,
           status: n.fieldValueByName?.optionId ?? null,
           parent: c.parent ? { id: c.parent.id, number: c.parent.number, title: c.parent.title } : null,
         });
@@ -119,15 +143,16 @@ async function load() {
     const epicIds = new Set(epics.map(e => e.id));
     for (const it of items) if (it.parent && !epicIds.has(it.parent.id)) { epics.push(it.parent); epicIds.add(it.parent.id); }
     const loaded = items.filter(i => !epicIds.has(i.id));
-    for (const temp of pendingCreates) {
-      if (temp.id && loaded.some(x => x.id === temp.id)) continue;
-      temp.top ? loaded.unshift(temp) : loaded.push(temp);
-    }
     data = { title: meta.title, fieldId: meta.field.id, statuses: meta.field.options, repoId, epicLabelId: repo?.label?.id ?? null, epics, items: loaded };
+    for (const op of [...doneWhileLoading, ...queue]) applyOp(op);
+    doneWhileLoading = [];
     lastLoad = Date.now();
+    setNet('ok');
     persistRender();
   } catch (e) {
-    toast(e.message);
+    if (retryable(e)) setNet('offline');
+    else if (e.kind === 'auth') setNet('auth');
+    else toast(e.message);
   } finally {
     loading = false;
     $('#refreshBtn').classList.remove('busy');
@@ -157,7 +182,7 @@ function render() {
   const tabsEl = $('#tabs');
   const scrollLeft = tabsEl.scrollLeft;
   tabsEl.replaceChildren(...tabList.map(s => h('button', {
-    class: 'tab' + (s.id === current ? ' active' : '') + (s.id === NO_STATUS ? ' no-status' : ''), style: `--c:${s.color ? optionColor(s.color) : 'transparent'}`,
+    class: 'tab' + (s.id === current ? ' active' : '') + (s.id === NO_STATUS ? ' no-status' : ''), 'data-id': s.id, style: `--c:${s.color ? optionColor(s.color) : 'transparent'}`,
     onclick: () => selectTab(s.id),
   }, byEpic ? null : h('span', { class: 'dot' }), s.name, h('span', { class: 'n', text: s.n }))));
   tabsEl.scrollLeft = scrollLeft;
@@ -170,6 +195,7 @@ function render() {
 
   const viewBtn = $('#groupBtn');
   viewBtn.hidden = false;
+  $('#searchBtn').hidden = false;
   viewBtn.textContent = byEpic ? '◧' : grouped ? '⊞' : '☰';
   viewBtn.setAttribute('aria-label', 'Вид списка');
 
@@ -283,7 +309,7 @@ function rowEl(it, showEpic) {
     h('div', { class: 'swipe-act left', text: '⇈ Наверх' }),
     h('div', { class: 'swipe-act right', text: isDone ? 'Вернуть ↺' : 'Готово ✓' }),
     row);
-  if (!it.pending) bindRowSwipe(wrap, row, it, isDone);
+  bindRowSwipe(wrap, row, it, isDone);
   return wrap;
 }
 
@@ -304,11 +330,13 @@ function bindRowSwipe(wrap, row, it, isDone) {
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; axis = null; swiped = false; dragged = false;
     row.classList.remove('snap');
     cancelPress();
+    if (x0 < EDGE || x0 > window.innerWidth - EDGE) { axis = 'edge'; return; }
     pressTimer = setTimeout(() => { pressTimer = null; if (!axis) { dragged = true; startDrag(wrap, it, y0); } }, LONG_PRESS_MS);
   }, { passive: true });
   row.addEventListener('touchmove', e => {
     const t = e.touches[0];
     if (drag?.wrap === wrap) { e.preventDefault(); drag.lastY = t.clientY; updateDrag(); return; }
+    if (axis === 'edge') return;
     const mx = t.clientX - x0, my = t.clientY - y0;
     if (!axis) {
       if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
@@ -422,6 +450,7 @@ function renderConnect() {
   $('#tabs').replaceChildren();
   $('#fab').hidden = true;
   $('#groupBtn').hidden = true;
+  $('#searchBtn').hidden = true;
   const input = h('input', { type: 'password', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
   const go = h('button', { class: 'btn primary wide' }, 'Подключить');
   const connect = async () => {
@@ -445,6 +474,8 @@ function renderConnect() {
 async function pickProject() {
   const d = await gql(`{viewer{login projectsV2(first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{id number title closed}}}}`);
   store.set(LS.token, token);
+  netState = 'ok';
+  warnScopes();
   const projects = d.viewer.projectsV2.nodes.filter(p => !p.closed);
   if (!projects.length) throw new Error('У аккаунта нет открытых проектов');
   if (projects.length === 1) return chooseProject(projects[0]);
@@ -458,7 +489,7 @@ async function pickProject() {
 }
 
 function chooseProject(p) {
-  if (project?.id !== p.id) { data = null; store.del(LS.cache); tab = null; renderedTab = null; collapsed = new Set(); store.del(LS.collapsed); }
+  if (project?.id !== p.id) { data = null; store.del(LS.cache); tab = null; renderedTab = null; collapsed = new Set(); store.del(LS.collapsed); queue = []; store.del(LS.queue); }
   project = { id: p.id, title: p.title };
   store.set(LS.project, project);
   render();
@@ -543,7 +574,7 @@ function bindPullToRefresh() {
   }, { passive: true });
   document.addEventListener('touchmove', e => {
     if (!pulling) return;
-    if (drag) { pulling = false; show(0); return; }
+    if (drag || $('#list').classList.contains('tab-swiping')) { pulling = false; show(0); return; }
     dy = e.touches[0].clientY - y0;
     if (dy <= 0 || window.scrollY > 0) { show(0); return; }
     show(dy * 0.55);
@@ -602,6 +633,23 @@ function chipGroup(options, value, onPick, { holdFocus = false } = {}) {
 const statusOptions = () => data.statuses.map(s => ({ id: s.id, name: s.name, color: optionColor(s.color) }));
 const epicOptions = () => [...data.epics.map(e => ({ id: e.id, name: e.title })), { id: NO_EPIC, name: 'Без эпика' }];
 
+const HALF_LIFE_DAYS = 7;
+const SESSION_MS = 3 * 3600e3;
+
+function rankedEpicOptions() {
+  const now = Date.now();
+  const score = new Map();
+  for (const it of data.items) {
+    const t = Date.parse(it.createdAt || '');
+    if (!t) continue;
+    const k = epicKey(it);
+    score.set(k, (score.get(k) || 0) + Math.pow(0.5, (now - t) / 864e5 / HALF_LIFE_DAYS));
+  }
+  const last = store.get(LS.lastAdd);
+  if (last && now - last.ts < SESSION_MS) score.set(last.epicId, (score.get(last.epicId) || 0) + 1000);
+  return epicOptions().map((o, i) => ({ o, i, s: score.get(o.id) || 0 })).sort((a, b) => b.s - a.s || a.i - b.i).map(x => x.o);
+}
+
 function autoGrow(ta) {
   const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
   ta.addEventListener('input', fit);
@@ -639,8 +687,10 @@ function openTask(it) {
 }
 
 function openNew() {
-  let epicId = view === 'epic' ? epicTab : store.get(LS.lastEpic, NO_EPIC);
-  if (epicId !== NO_EPIC && !data.epics.some(e => e.id === epicId)) epicId = NO_EPIC;
+  const ranked = rankedEpicOptions();
+  let epicId = view === 'epic' ? epicTab : ranked[0].id;
+  const current = ranked.findIndex(o => o.id === epicId);
+  if (current > 0) ranked.unshift(...ranked.splice(current, 1));
   let statusId = view === 'epic' || tab === NO_STATUS ? defaultStatusId() : tab;
   const title = h('textarea', { class: 't-title new-title', rows: '1', placeholder: 'Что нужно сделать?', enterkeyhint: 'next', autocapitalize: 'sentences' });
   const body = h('textarea', { class: 'new-body', rows: '1', placeholder: 'Описание', autocapitalize: 'sentences' });
@@ -654,7 +704,7 @@ function openNew() {
   const submit = () => {
     const t = title.value.trim();
     if (!t) { title.focus(); return; }
-    store.set(LS.lastEpic, epicId);
+    store.set(LS.lastAdd, { epicId, ts: Date.now() });
     createTask({ title: t, body: body.value.trim(), epicId: epicId === NO_EPIC ? null : epicId, statusId, top: top.checked });
     toast('Добавлено');
     if (closeAfter.checked) { closeSheet(true); return; }
@@ -667,7 +717,7 @@ function openNew() {
   add.addEventListener('click', submit);
   title.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); body.focus(); } });
   const line = (label, chips) => h('div', { class: 'chip-line' }, h('span', { class: 'cl-label', text: label }), chips);
-  const epicChips = chipGroup(epicOptions(), epicId, id => { epicId = id; }, { holdFocus: true });
+  const epicChips = chipGroup(ranked, epicId, id => { epicId = id; }, { holdFocus: true });
   const statusChips = chipGroup(statusOptions(), statusId, id => { statusId = id; }, { holdFocus: true });
   openSheet(h('div', { class: 'new-task' },
     h('div', { class: 'new-head' }, h('h3', { text: 'Новая задача' }), add),
@@ -689,7 +739,11 @@ function openSettings() {
   openSheet(h('div', {},
     h('h3', { text: 'Настройки' }),
     h('p', { class: 'muted', text: project ? `Доска: ${project.title}` : 'Доска не выбрана' }),
-    h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Потяни список вниз, чтобы обновить.' }),
+    tokenScopes ? h('p', { class: 'muted' + (extraScopes().length ? ' warn' : ''), text: extraScopes().length
+      ? `Права токена: ${tokenScopes.join(', ')}. Лишние: ${extraScopes().join(', ')} — лучше выпустить новый только с repo и project.`
+      : `Права токена: ${tokenScopes.join(', ')} — ничего лишнего.` }) : null,
+    h('p', { class: 'muted', text: 'Свайп задачи влево — готово, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Свайп от края экрана или по заголовкам — соседняя вкладка. Потяни список вниз, чтобы обновить.' }),
+    token ? h('button', { class: 'btn wide', onclick: openReauth }, 'Заменить токен') : null,
     data ? h('button', { class: 'btn wide', onclick: openEpics }, 'Эпики…') : null,
     data ? h('button', { class: 'btn wide', onclick: openStatuses }, 'Статусы…') : null,
     data ? h('button', { class: 'btn wide', onclick: openView }, 'Вид списка…') : null,
@@ -806,7 +860,7 @@ async function createEpic(title) {
 function renameEpic(epic, title) {
   const prev = epic.title;
   const sync = t => { epic.title = t; for (const it of data.items) if (it.parent?.id === epic.id) it.parent.title = t; };
-  return mutate(() => sync(title), () => sync(prev), () => gql(M.rename, { i: epic.id, t: title }));
+  return mutateNow(() => sync(title), () => sync(prev), () => gql(M.rename, { i: epic.id, t: title }));
 }
 
 async function bulkMove(tasks, dest) {
@@ -816,7 +870,7 @@ async function bulkMove(tasks, dest) {
   const ops = moving.map((t, i) => dest
     ? `m${i}: addSubIssue(input:{issueId:${JSON.stringify(dest.id)},subIssueId:${JSON.stringify(t.id)},replaceParent:true}){clientMutationId}`
     : `m${i}: removeSubIssue(input:{issueId:${JSON.stringify(t.parent.id)},subIssueId:${JSON.stringify(t.id)}}){clientMutationId}`);
-  await mutate(
+  await mutateNow(
     () => moving.forEach(t => { t.parent = dest ? { id: dest.id, number: dest.number, title: dest.title } : null; }),
     () => moving.forEach(t => { t.parent = prev.get(t); }),
     async () => { for (let i = 0; i < ops.length; i += 20) await gql(`mutation{${ops.slice(i, i + 20).join(' ')}}`); });
@@ -829,7 +883,7 @@ async function closeEpic(epic) {
   if (!kids.length && !confirm(`Закрыть эпик «${epic.title}»?`)) return;
   closeSheet(true);
   const idx = data.epics.indexOf(epic);
-  await mutate(
+  await mutateNow(
     () => { data.epics.splice(idx, 1); kids.forEach(k => { k.parent = null; }); },
     () => { data.epics.splice(idx, 0, epic); kids.forEach(k => { k.parent = { id: epic.id, number: epic.number, title: epic.title }; }); },
     async () => {
@@ -886,40 +940,217 @@ function disconnect() {
   Object.values(LS).forEach(k => store.del(k));
   token = project = data = tab = renderedTab = null;
   collapsed = new Set();
+  queue = [];
+  netState = 'ok';
+  updateNet();
   closeSheet(true);
   render();
 }
 
-async function mutate(apply, rollback, run) {
+async function mutateNow(apply, rollback, run) {
   apply();
   persistRender();
   try { await run(); persist(); }
-  catch (e) { rollback(); persistRender(); toast(e.message); }
+  catch (e) {
+    rollback();
+    persistRender();
+    toast(retryable(e) ? 'Нет связи — это действие нужно повторить онлайн' : e.message);
+    if (e.kind === 'auth') setNet('auth');
+  }
+}
+
+const byItem = id => data.items.find(x => x.itemId === id);
+const epicRef = epic => epic ? { id: epic.id, number: epic.number, title: epic.title } : null;
+
+function applyOp(op) {
+  if (op.type === 'create') {
+    const ref = op.real?.itemId ?? op.tmp;
+    if (byItem(ref) || (op.real && data.items.some(x => x.id === op.real.id))) return;
+    const it = { itemId: ref, id: op.real?.id ?? null, number: op.real?.number ?? null, title: op.title, body: op.body || '', state: 'OPEN',
+      url: op.real?.url ?? null, status: op.statusId, parent: op.epic, createdAt: op.createdAt };
+    if (!op.real) it.pending = true;
+    op.top ? data.items.unshift(it) : data.items.push(it);
+    return;
+  }
+  const it = byItem(op.item);
+  if (!it) return;
+  if (op.type === 'status') it.status = op.optionId;
+  else if (op.type === 'epic') it.parent = op.epic;
+  else if (op.type === 'text') Object.assign(it, { title: op.title, body: op.body });
+  else if (op.type === 'remove') data.items = data.items.filter(x => x !== it);
+  else if (op.type === 'position') {
+    const rest = data.items.filter(x => x !== it);
+    const after = op.after ? rest.find(x => x.itemId === op.after) : null;
+    if (op.after && !after) return;
+    rest.splice(after ? rest.indexOf(after) + 1 : 0, 0, it);
+    data.items = rest;
+  }
+}
+
+function enqueue(op) {
+  op.qid = Date.now() + '-' + Math.random().toString(36).slice(2);
+  queue.push(op);
+  store.set(LS.queue, queue);
+  applyOp(op);
+  persistRender();
+  flush();
+}
+
+const isTemp = id => typeof id === 'string' && id.startsWith('tmp-');
+
+async function execOp(op) {
+  if (op.type === 'create') {
+    const issue = (await gql(M.create, { r: data.repoId, t: op.title, b: op.body || null, par: op.epic?.id ?? null, p: project.id })).createIssue.issue;
+    let itemId = issue.projectItems?.nodes.find(n => n.project.id === project.id)?.id;
+    if (!itemId) itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
+    if (op.statusId && op.statusId !== NO_STATUS) await gql(M.placeNew, { p: project.id, i: itemId, f: data.fieldId, o: op.statusId, top: !!op.top });
+    else if (op.top) await gql(M.position, { p: project.id, i: itemId, a: null });
+    op.real = { itemId, id: issue.id, number: issue.number, url: issue.url };
+    for (const q of queue) {
+      if (q.item === op.tmp) { q.item = itemId; q.issue = issue.id; }
+      if (q.after === op.tmp) q.after = itemId;
+    }
+    const temp = byItem(op.tmp);
+    if (data.items.some(x => x !== temp && x.id === issue.id)) data.items = data.items.filter(x => x !== temp);
+    else if (temp) { Object.assign(temp, { itemId, id: issue.id, number: issue.number, url: issue.url }); delete temp.pending; }
+    return;
+  }
+  if (isTemp(op.item) || isTemp(op.after)) return;
+  const it = byItem(op.item);
+  if (op.type === 'status') {
+    const state = it?.state ?? 'OPEN';
+    if (!op.done && state === 'CLOSED') { await gql(M.reopen, { i: op.issue }); if (it) it.state = 'OPEN'; }
+    await gql(M.status, { p: project.id, i: op.item, f: data.fieldId, o: op.optionId });
+    if (op.done && state === 'OPEN') { await gql(M.close, { i: op.issue, r: 'COMPLETED' }); if (it) it.state = 'CLOSED'; }
+  } else if (op.type === 'epic') {
+    if (op.epic) await gql(M.setParent, { p: op.epic.id, s: op.issue });
+    else if (op.prev) await gql(M.unsetParent, { p: op.prev, s: op.issue });
+  } else if (op.type === 'text') await gql(M.text, { i: op.issue, t: op.title, b: op.body });
+  else if (op.type === 'position') await gql(M.position, { p: project.id, i: op.item, a: op.after });
+  else if (op.type === 'remove') await gql(M.remove, { p: project.id, i: op.item, c: op.issue });
+}
+
+function dropOp(op) {
+  if (queue[0] === op) queue.shift();
+  else queue = queue.filter(q => q !== op);
+  store.set(LS.queue, queue);
+}
+
+function flush() {
+  if (flushing) return flushing;
+  let reload = false;
+  flushing = (async () => {
+    while (queue.length && token && project && data) {
+      const op = queue[0];
+      try { await execOp(op); }
+      catch (e) {
+        if (retryable(e)) { setNet('offline'); scheduleRetry(); return; }
+        if (e.kind === 'auth') { setNet('auth'); return; }
+        dropOp(op);
+        if (op.type === 'create') {
+          data.items = data.items.filter(x => x.itemId !== op.tmp);
+          queue = queue.filter(q => q.item !== op.tmp && q.after !== op.tmp);
+          store.set(LS.queue, queue);
+        }
+        toast('Не сохранилось: ' + e.message);
+        reload = true;
+        continue;
+      }
+      dropOp(op);
+      if (loading) doneWhileLoading.push(op);
+      setNet('ok');
+      persistRender();
+    }
+  })().finally(() => {
+    flushing = null;
+    updateNet();
+    if (reload) load();
+  });
+  return flushing;
+}
+
+function scheduleRetry() {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { retryTimer = null; flush(); }, RETRY_MS);
+}
+
+function setNet(state) {
+  if (netState === state) return updateNet();
+  netState = state;
+  updateNet();
+  if (state === 'auth') toast('GitHub не принимает токен — введи новый');
+}
+
+function updateNet() {
+  const badge = $('#netBadge');
+  root.classList.toggle('offline', netState === 'offline');
+  if (netState === 'ok' && !queue.length) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.className = 'net-badge ' + netState;
+  badge.textContent = netState === 'auth' ? 'Токен ⚠︎' : netState === 'offline' ? `Нет сети${queue.length ? ' · ' + queue.length : ''}` : `Сохраняю · ${queue.length}`;
+}
+
+function onBadge() {
+  if (netState === 'auth') return openReauth();
+  if (netState === 'offline') {
+    toast(queue.length ? `Изменений в очереди: ${queue.length}. Отправлю, когда появится связь` : 'Нет связи с GitHub — показываю сохранённое');
+    flush();
+    load();
+  }
+}
+
+function openReauth() {
+  const input = h('input', { type: 'password', placeholder: 'ghp_…', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go' });
+  const save = h('button', { class: 'btn primary wide' }, 'Сохранить');
+  const go = async () => {
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    const prev = token;
+    token = v;
+    save.disabled = true;
+    try {
+      await gql('{viewer{login}}');
+      store.set(LS.token, token);
+      netState = 'ok';
+      updateNet();
+      closeSheet(true);
+      warnScopes();
+      await flush();
+      load();
+    } catch (e) {
+      token = prev;
+      save.disabled = false;
+      toast(e.message);
+    }
+  };
+  save.addEventListener('click', go);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  openSheet(h('div', {},
+    h('h3', { text: 'Новый токен' }),
+    h('p', { class: 'muted', text: queue.length ? `GitHub перестал принимать токен. Несохранённые изменения (${queue.length}) никуда не делись — отправлю их с новым токеном.` : 'GitHub перестал принимать токен — скорее всего, истёк срок. Создай новый с правами repo и project.' }),
+    h('a', { class: 'btn wide', href: TOKEN_URL, target: '_blank', rel: 'noopener' }, 'Создать токен на GitHub ↗'),
+    input, save));
+  input.focus();
+}
+
+function warnScopes() {
+  const extra = extraScopes();
+  if (extra.length) toast(`У токена лишние права: ${extra.join(', ')}. Лучше выпустить новый только с repo и project`);
 }
 
 function setStatus(it, optionId) {
-  const prev = { status: it.status, state: it.state };
-  const done = doneStatus()?.id === optionId;
-  return mutate(() => { it.status = optionId; }, () => Object.assign(it, prev), async () => {
-    if (!done && it.state === 'CLOSED') { await gql(M.reopen, { i: it.id }); it.state = 'OPEN'; }
-    await gql(M.status, { p: project.id, i: it.itemId, f: data.fieldId, o: optionId });
-    if (done && it.state === 'OPEN') { await gql(M.close, { i: it.id, r: 'COMPLETED' }); it.state = 'CLOSED'; }
-  });
+  if (it.status === optionId) return;
+  enqueue({ type: 'status', item: it.itemId, issue: it.id, optionId, done: doneStatus()?.id === optionId });
 }
 
 function setEpic(it, epicId) {
-  const prev = it.parent;
   const epic = epicId ? data.epics.find(e => e.id === epicId) : null;
-  if ((prev?.id ?? null) === (epic?.id ?? null)) return;
-  return mutate(() => { it.parent = epic ? { id: epic.id, number: epic.number, title: epic.title } : null; }, () => { it.parent = prev; }, async () => {
-    if (epic) await gql(M.setParent, { p: epic.id, s: it.id });
-    else await gql(M.unsetParent, { p: prev.id, s: it.id });
-  });
+  if ((it.parent?.id ?? null) === (epic?.id ?? null)) return;
+  enqueue({ type: 'epic', item: it.itemId, issue: it.id, epic: epicRef(epic), prev: it.parent?.id ?? null });
 }
 
 function saveText(it, title, body) {
-  const prev = { title: it.title, body: it.body };
-  return mutate(() => Object.assign(it, { title, body }), () => Object.assign(it, prev), () => gql(M.text, { i: it.id, t: title, b: body }));
+  enqueue({ type: 'text', item: it.itemId, issue: it.id, title, body });
 }
 
 const siblingsOf = it => data.items.filter(x => statusKey(x) === statusKey(it) && (view === 'epic' || grouped ? epicKey(x) === epicKey(it) : true));
@@ -936,48 +1167,131 @@ function placeAt(it, index) {
   if (!others.length || index < 0 || index > others.length || index === from) return;
   const rest = data.items.filter(x => x !== it);
   const after = index === 0 ? rest[rest.indexOf(others[0]) - 1] ?? null : others[index - 1];
-  const prevOrder = data.items;
-  return mutate(() => {
-    rest.splice(after ? rest.indexOf(after) + 1 : 0, 0, it);
-    data.items = rest;
-  }, () => { data.items = prevOrder; }, () => gql(M.position, { p: project.id, i: it.itemId, a: after?.itemId ?? null }));
+  enqueue({ type: 'position', item: it.itemId, after: after?.itemId ?? null });
 }
 
-async function createTask({ title, body, epicId, statusId, top }) {
+function createTask({ title, body, epicId, statusId, top }) {
   const epic = epicId ? data.epics.find(e => e.id === epicId) : null;
-  const temp = { itemId: 'tmp-' + Date.now() + Math.random(), id: null, number: null, title, body: body || '', state: 'OPEN', url: null, status: statusId,
-    parent: epic ? { id: epic.id, number: epic.number, title: epic.title } : null, pending: true, top };
-  pendingCreates.add(temp);
-  top ? data.items.unshift(temp) : data.items.push(temp);
-  render();
-  try {
-    const issue = (await gql(M.create, { r: data.repoId, t: title, b: body || null, par: epic?.id ?? null, p: project.id })).createIssue.issue;
-    let itemId = issue.projectItems?.nodes.find(n => n.project.id === project.id)?.id;
-    if (!itemId) itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
-    if (statusId && statusId !== NO_STATUS) await gql(M.placeNew, { p: project.id, i: itemId, f: data.fieldId, o: statusId, top });
-    else if (top) await gql(M.position, { p: project.id, i: itemId, a: null });
-    Object.assign(temp, { itemId, id: issue.id, number: issue.number, url: issue.url });
-    delete temp.pending;
-    delete temp.top;
-    const duplicate = data.items.find(x => x !== temp && x.id === issue.id);
-    if (duplicate) data.items = data.items.filter(x => x !== temp);
-    else if (!data.items.includes(temp)) data.items.push(temp);
-    persistRender();
-  } catch (e) {
-    data.items = data.items.filter(x => x !== temp);
-    persistRender();
-    toast('Не создалось: ' + e.message);
-  } finally {
-    pendingCreates.delete(temp);
-  }
+  enqueue({ type: 'create', tmp: 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2), title, body: body || '', epic: epicRef(epic), statusId, top: !!top, createdAt: new Date().toISOString() });
 }
 
 function removeTask(it) {
   if (!confirm(`Удалить «${it.title}»?\nIssue закроется как not planned и уйдёт с доски.`)) return;
   closeSheet(true);
-  const idx = data.items.indexOf(it);
-  return mutate(() => data.items.splice(idx, 1), () => data.items.splice(idx, 0, it),
-    () => gql(M.remove, { p: project.id, i: it.itemId, c: it.id }));
+  enqueue({ type: 'remove', item: it.itemId, issue: it.id });
+}
+
+const norm = t => (t || '').toLowerCase().replace(/ё/g, 'е');
+
+function searchItems(q) {
+  const words = norm(q).split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const doneId = doneStatus()?.id;
+  return data.items
+    .map(it => ({ it, title: norm(it.title), all: norm(it.title + ' ' + it.body + ' ' + (it.parent?.title || '')) }))
+    .filter(x => words.every(w => x.all.includes(w)))
+    .sort((a, b) => (words.every(w => b.title.includes(w)) - words.every(w => a.title.includes(w))) || ((a.it.status === doneId) - (b.it.status === doneId)))
+    .map(x => x.it);
+}
+
+function highlight(text, q) {
+  const words = norm(q).split(/\s+/).filter(Boolean);
+  const low = norm(text);
+  const marks = new Array(text.length).fill(false);
+  for (const w of words) for (let i = low.indexOf(w); i !== -1; i = low.indexOf(w, i + 1)) marks.fill(true, i, i + w.length);
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    let j = i;
+    while (j < text.length && marks[j] === marks[i]) j++;
+    out.push(marks[i] ? h('mark', { text: text.slice(i, j) }) : text.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+function openSearch() {
+  const input = h('input', { type: 'search', class: 'search-input', placeholder: 'Название, описание, эпик…', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+  const results = h('div', { class: 'search-results' });
+  const doneId = doneStatus()?.id;
+  const draw = () => {
+    const q = input.value.trim();
+    if (!q) { results.replaceChildren(h('p', { class: 'muted small', text: `Ищу по всем ${data.items.length} задачам, включая Done` })); return; }
+    const found = searchItems(q);
+    results.replaceChildren(
+      h('p', { class: 'muted small', text: found.length ? `Найдено: ${found.length}` : 'Ничего не нашлось' }),
+      found.length ? h('div', { class: 'list' }, found.slice(0, 60).map(it => {
+        const st = data.statuses.find(x => x.id === it.status);
+        return h('button', { class: 'list-row search-row' + (it.status === doneId ? ' done' : ''), onclick: () => { closeSheet(true); openTask(it); } },
+          h('span', { class: 'lr-title' },
+            h('span', { class: 'sr-title' }, highlight(it.title, q)),
+            h('span', { class: 'lr-hint' },
+              h('span', { class: 'dot', style: `--c:${st ? optionColor(st.color) : 'transparent'}` }), ' ', st?.name ?? 'Без статуса', it.parent ? ' · ' + it.parent.title : '')),
+          h('span', { class: 'rchev', text: '›' }));
+      })) : null);
+  };
+  input.addEventListener('input', draw);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  openSheet(h('div', { class: 'search' }, input, results));
+  draw();
+  input.focus();
+}
+
+function adjacentTab(dir) {
+  const ids = [...document.querySelectorAll('#tabs .tab')].map(b => b.dataset.id);
+  const i = ids.indexOf(view === 'epic' ? epicTab : tab);
+  return i === -1 ? null : ids[i + dir] ?? null;
+}
+
+function bindTabSwipe() {
+  const list = $('#list');
+  let x0 = 0, y0 = 0, dx = 0, axis = null, active = false;
+  const startsOnRow = e => !!e.target.closest('.swipe');
+  document.addEventListener('touchstart', e => {
+    active = false;
+    if (e.touches.length !== 1 || !data || !token || root.classList.contains('locked') || drag) return;
+    if (e.target.closest('.tabs,.top,.fab,.toast')) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    const atEdge = x0 < EDGE || x0 > window.innerWidth - EDGE;
+    if (!atEdge && startsOnRow(e)) return;
+    active = true; axis = null; dx = 0;
+  }, { passive: true, capture: true });
+  document.addEventListener('touchmove', e => {
+    if (!active || drag) return;
+    const t = e.touches[0];
+    const mx = t.clientX - x0, my = t.clientY - y0;
+    if (!axis) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      axis = Math.abs(mx) > Math.abs(my) * 1.3 ? 'x' : 'y';
+      if (axis === 'y') { active = false; return; }
+      list.classList.add('tab-swiping');
+    }
+    e.preventDefault();
+    dx = mx;
+    const blocked = !adjacentTab(dx < 0 ? 1 : -1);
+    list.style.transform = `translateX(${dx * (blocked ? 0.15 : 0.45)}px)`;
+  }, { passive: false, capture: true });
+  const end = () => {
+    if (!active) return;
+    active = false;
+    if (axis !== 'x') return;
+    tabSwipeAt = Date.now();
+    list.classList.remove('tab-swiping');
+    const next = Math.abs(dx) > TAB_SWIPE ? adjacentTab(dx < 0 ? 1 : -1) : null;
+    if (!next) { list.style.transform = ''; return; }
+    list.style.transition = 'none';
+    list.style.transform = `translateX(${dx < 0 ? 40 : -40}px)`;
+    list.style.opacity = '0.4';
+    selectTab(next);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      list.style.transition = '';
+      list.style.transform = '';
+      list.style.opacity = '';
+    }));
+  };
+  document.addEventListener('touchend', end, { capture: true });
+  document.addEventListener('touchcancel', () => { active = false; list.classList.remove('tab-swiping'); list.style.transform = ''; }, { capture: true });
+  document.addEventListener('click', e => { if (Date.now() - tabSwipeAt < 400) { e.stopPropagation(); e.preventDefault(); } }, { capture: true });
 }
 
 let toastTimer;
@@ -995,14 +1309,23 @@ $('#fab').addEventListener('click', () => data && openNew());
 $('#refreshBtn').addEventListener('click', load);
 $('#groupBtn').addEventListener('click', () => data && openView());
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#searchBtn').addEventListener('click', () => data && openSearch());
+$('#netBadge').addEventListener('click', onBadge);
+window.addEventListener('online', () => { flush(); load(); });
 $('#sheetWrap').addEventListener('click', e => { if (e.target.id === 'sheetWrap') closeSheet(); });
 document.addEventListener('touchstart', () => {}, { passive: true });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastLoad > 30000) load(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (queue.length) flush();
+  if (Date.now() - lastLoad > 30000) load();
+});
 window.addEventListener('resize', syncHeaderHeight);
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 bindSheetDrag();
 bindPullToRefresh();
+bindTabSwipe();
 bindViewport();
 render();
+updateNet();
 load();
