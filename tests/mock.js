@@ -28,6 +28,12 @@
       const auth = opts.headers.Authorization;
       if (localStorage.getItem('mock.badToken') === auth) return new Response('{}', { status: 401 });
       const { query, variables } = JSON.parse(opts.body);
+      const failPlace = +(localStorage.getItem('mock.failPlace') || 0);
+      if (failPlace > 0 && query.includes('s:updateProjectV2ItemFieldValue')) {
+        localStorage.setItem('mock.failPlace', String(failPlace - 1));
+        window.__calls.push({ q: 'FAILED ' + query.replace(/\s+/g, ' '), variables, auth });
+        return new Response(JSON.stringify({ errors: [{ type: 'NOT_FOUND', message: 'Could not resolve to ProjectV2Item' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       window.__calls.push({ q: query.replace(/\s+/g, ' '), variables, auth });
       await new Promise(r => setTimeout(r, 250));
       return new Response(JSON.stringify({ data: answer(query, variables) }), { status: 200, headers: { 'Content-Type': 'application/json', 'X-OAuth-Scopes': window.__scopes } });

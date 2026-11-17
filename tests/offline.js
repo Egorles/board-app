@@ -147,6 +147,22 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await swipe(60, 400, 300, 400);
   check('no tab before first: stays', (await activeTab()) === firstTab, await activeTab());
 
+  await page.tap('.tab[data-id="o2"]');
+  await wait(300);
+  await page.evaluate(() => localStorage.setItem('mock.failPlace', '2'));
+  const callsBefore = (await calls()).length;
+  await page.tap('#fab');
+  await wait(300);
+  await page.keyboard.type('Статус не сразу');
+  await page.tap('#sheet .add-btn');
+  await wait(300);
+  await page.evaluate(() => closeSheet());
+  await wait(5500);
+  const placeCalls = (await calls()).slice(callsBefore).filter(x => x.q.includes('s:updateProjectV2ItemFieldValue'));
+  check('new task: status retried after GitHub not ready', placeCalls.length === 3 && placeCalls.at(-1).q.startsWith('mutation'), placeCalls.map(x => x.q.slice(0, 7)).join(','));
+  check('new task: stays in its status, no error toast', (await titles()).includes('Статус не сразу') && !/Не сохранилось|статус не сохранился/.test(await page.textContent('#toast')));
+  check('new task: queue drained', (await page.evaluate(() => localStorage.getItem('pb.queue'))) === '[]');
+
   await page.evaluate(() => { window.__scopes = 'gist, project, repo, workflow'; });
   await page.evaluate(() => load());
   await wait(1200);

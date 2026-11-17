@@ -1079,7 +1079,7 @@ function applyOp(op) {
   }
   const it = byItem(op.item);
   if (!it) return;
-  if (op.type === 'status') it.status = op.optionId;
+  if (op.type === 'status' || (op.type === 'place' && op.optionId)) it.status = op.optionId;
   else if (op.type === 'epic') it.parent = op.epic;
   else if (op.type === 'text') Object.assign(it, { title: op.title, body: op.body });
   else if (op.type === 'remove') data.items = data.items.filter(x => x !== it);
@@ -1108,9 +1108,9 @@ async function execOp(op) {
     const issue = (await gql(M.create, { r: data.repoId, t: op.title, b: op.body || null, par: op.epic?.id ?? null, p: project.id })).createIssue.issue;
     let itemId = issue.projectItems?.nodes.find(n => n.project.id === project.id)?.id;
     if (!itemId) itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
-    if (op.statusId && op.statusId !== NO_STATUS) await gql(M.placeNew, { p: project.id, i: itemId, f: data.fieldId, o: op.statusId, top: !!op.top });
-    else if (op.top) await gql(M.position, { p: project.id, i: itemId, a: null });
     op.real = { itemId, id: issue.id, number: issue.number, url: issue.url };
+    const optionId = op.statusId && op.statusId !== NO_STATUS ? op.statusId : null;
+    if (optionId || op.top) queue.splice(queue.indexOf(op) + 1, 0, { qid: op.qid + '-place', type: 'place', item: itemId, issue: issue.id, optionId, top: !!op.top });
     for (const q of queue) {
       if (q.item === op.tmp) { q.item = itemId; q.issue = issue.id; }
       if (q.after === op.tmp) q.after = itemId;
@@ -1122,6 +1122,7 @@ async function execOp(op) {
   }
   if (isTemp(op.item) || isTemp(op.after)) return;
   const it = byItem(op.item);
+  if (op.type === 'place') return placeWithRetry(op);
   if (op.type === 'status') {
     const state = it?.state ?? 'OPEN';
     if (!op.done && state === 'CLOSED') { await gql(M.reopen, { i: op.issue }); if (it) it.state = 'OPEN'; }
@@ -1133,6 +1134,22 @@ async function execOp(op) {
   } else if (op.type === 'text') await gql(M.text, { i: op.issue, t: op.title, b: op.body });
   else if (op.type === 'position') await gql(M.position, { p: project.id, i: op.item, a: op.after });
   else if (op.type === 'remove') await gql(M.remove, { p: project.id, i: op.item, c: op.issue });
+}
+
+const PLACE_RETRY_MS = [800, 1600, 3200, 6400];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function placeWithRetry(op) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (op.optionId) await gql(M.placeNew, { p: project.id, i: op.item, f: data.fieldId, o: op.optionId, top: op.top });
+      else await gql(M.position, { p: project.id, i: op.item, a: null });
+      return;
+    } catch (e) {
+      if (e.kind !== 'gql' || attempt >= PLACE_RETRY_MS.length) throw e;
+      await sleep(PLACE_RETRY_MS[attempt]);
+    }
+  }
 }
 
 function dropOp(op) {
@@ -1157,7 +1174,7 @@ function flush() {
           queue = queue.filter(q => q.item !== op.tmp && q.after !== op.tmp);
           store.set(LS.queue, queue);
         }
-        toast('Не сохранилось: ' + e.message);
+        toast(op.type === 'place' ? 'Задача создана, но статус не сохранился — выбери его ещё раз' : 'Не сохранилось: ' + e.message);
         reload = true;
         continue;
       }
