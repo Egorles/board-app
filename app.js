@@ -595,6 +595,7 @@ function closeSheet(skipCallback = false) {
   if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus({ preventScroll: true });
   sheetReturnFocus = null;
   if (cb && !skipCallback) cb();
+  if (updateReady) setTimeout(applyUpdateWhenSafe, 400);
 }
 
 function bindSheetDrag() {
@@ -925,7 +926,8 @@ function openSettings() {
     token ? h('div', { class: 'list' },
       h('button', { class: 'list-row', onclick: async () => { closeSheet(); try { await pickProject(); } catch (e) { toast(e.message); } } }, h('span', { class: 'lr-title', text: 'Сменить доску' }), h('span', { class: 'rchev' }, icon('chevron', 18))),
       h('button', { class: 'list-row', onclick: openReauth }, h('span', { class: 'lr-title', text: 'Заменить токен' }), h('span', { class: 'rchev' }, icon('chevron', 18)))) : null,
-    token ? h('button', { class: 'btn danger wide', onclick: disconnect }, 'Отключить GitHub на этом устройстве') : null));
+    token ? h('button', { class: 'btn danger wide', onclick: disconnect }, 'Отключить GitHub на этом устройстве') : null,
+    h('p', { class: 'muted small app-version', text: appVersion ? `Версия ${appVersion}` : 'Версия не определена' })));
 }
 
 const childrenOf = epicId => data.items.filter(it => epicKey(it) === epicId);
@@ -1553,6 +1555,49 @@ function bindTabSwipe() {
 }
 
 let toastTimer;
+const UPDATE_CHECK_MS = 30 * 60e3;
+const UPDATED_FLAG = 'pb.justUpdated';
+let updateReady = false;
+let appVersion = null;
+
+function applyUpdate() {
+  try { sessionStorage.setItem(UPDATED_FLAG, '1'); } catch {}
+  location.reload();
+}
+
+function applyUpdateWhenSafe() {
+  if (!updateReady) return;
+  if (root.classList.contains('locked') || document.activeElement?.matches('input,textarea') || drag) return;
+  applyUpdate();
+}
+
+async function readAppVersion() {
+  try {
+    const key = (await caches.keys()).filter(k => k.startsWith('board-v')).sort((a, b) => parseInt(b.slice(7)) - parseInt(a.slice(7)))[0];
+    appVersion = key ? key.slice(7) : null;
+  } catch {}
+}
+
+function bindUpdates() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  let controlled = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(readAppVersion).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!controlled) { controlled = true; readAppVersion(); return; }
+    updateReady = true;
+    applyUpdateWhenSafe();
+  });
+  const check = () => navigator.serviceWorker.getRegistration().then(r => r?.update()).catch(() => {});
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  setInterval(check, UPDATE_CHECK_MS);
+  try {
+    if (sessionStorage.getItem(UPDATED_FLAG)) {
+      sessionStorage.removeItem(UPDATED_FLAG);
+      readAppVersion().then(() => toast(appVersion ? `Приложение обновлено до версии ${appVersion}` : 'Приложение обновлено'));
+    }
+  } catch {}
+}
+
 let toastMs = 0;
 function hideToastLater() {
   clearTimeout(toastTimer);
@@ -1607,7 +1652,7 @@ document.addEventListener('visibilitychange', () => {
   if (Date.now() - lastLoad > 30000) load();
 });
 window.addEventListener('resize', syncHeaderHeight);
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+bindUpdates();
 
 bindSheetDrag();
 bindPullToRefresh();

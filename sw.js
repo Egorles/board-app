@@ -1,4 +1,4 @@
-const CACHE = 'board-v11';
+const CACHE = 'board-v12';
 const SHELL = ['./', './index.html', './app.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
