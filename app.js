@@ -197,6 +197,7 @@ async function load() {
   } finally {
     loading = false;
     root.classList.remove('loading');
+    if (updateReady) setTimeout(applyUpdateWhenSafe, 0);
   }
 }
 
@@ -1301,6 +1302,7 @@ function flush() {
   })().finally(() => {
     flushing = null;
     updateNet();
+    if (updateReady) setTimeout(applyUpdateWhenSafe, 0);
     if (reload) load();
   });
   return flushing;
@@ -1568,6 +1570,7 @@ function applyUpdate() {
 function applyUpdateWhenSafe() {
   if (!updateReady) return;
   if (root.classList.contains('locked') || document.activeElement?.matches('input,textarea') || drag) return;
+  if (flushing || loading) return;
   applyUpdate();
 }
 

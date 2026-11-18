@@ -46,6 +46,24 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
     await page.evaluate(() => closeSheet());
     await page.waitForFunction(() => !window.__marker, null, { timeout: 15000 }).catch(() => {});
     check('update applies right after the sheet closes', await page.evaluate(() => !window.__marker));
+    await page.waitForSelector('.row');
+    await page.evaluate(() => {
+      window.__marker = 3;
+      const realFetch = window.fetch;
+      window.fetch = async (url, opts) => { if (String(url).includes('graphql') && opts.body.includes('createIssue')) await new Promise(r => setTimeout(r, 4000)); return realFetch(url, opts); };
+    });
+    await page.tap('#fab');
+    await wait(300);
+    await page.keyboard.type('Задача в полёте');
+    await page.tap('#sheet label.toggle:has-text("Закрыть после")');
+    await page.tap('#sheet .add-btn');
+    await wait(200);
+    fs.writeFileSync(FLAG, '103');
+    await triggerCheck();
+    await wait(2000);
+    check('update waits while a change is being sent to GitHub', await page.evaluate(() => window.__marker === 3));
+    await page.waitForFunction(() => !window.__marker, null, { timeout: 20000 }).catch(() => {});
+    check('update applies after the change is saved', await page.evaluate(() => !window.__marker && JSON.parse(localStorage.getItem('pb.queue') || '[]').length === 0));
     check('no page errors', errors.length === 0, errors.join('; '));
   } finally {
     fs.rmSync(FLAG, { force: true });
