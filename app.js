@@ -59,6 +59,8 @@ const ICONS = {
   pause: ['<path d="M9 5v14M15 5v14"/>'],
   inbox: ['<path d="M22 12h-6l-2 3h-4l-2-3H2"/>', '<path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'],
   trash: ['<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>'],
+  sub: ['<path d="m15 10 5 5-5 5"/>', '<path d="M4 4v7a4 4 0 0 0 4 4h12"/>'],
+  split: ['<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'],
 };
 
 function icon(name, size = 20) {
@@ -68,10 +70,9 @@ function icon(name, size = 20) {
   return svg;
 }
 
-const EPIC_COLORS = ['#2f81f7', '#bf3989', '#1a9d8f', '#d4762c', '#8250df', '#7d9a1f', '#cf4040', '#3d8fb5'];
 const epicColor = id => {
-  const i = data.epics.findIndex(e => e.id === id);
-  return i === -1 ? 'var(--muted)' : EPIC_COLORS[i % EPIC_COLORS.length];
+  const e = data.epics.find(x => x.id === id);
+  return e ? OPTION_COLORS[e.color] || OPTION_COLORS.GRAY : 'var(--muted)';
 };
 const swatch = id => h('span', { class: 'swatch', style: `--c:${epicColor(id)}`, 'aria-hidden': 'true' });
 const root = document.documentElement;
@@ -93,7 +94,7 @@ function h(tag, attrs = {}, ...kids) {
 const fail = (message, kind) => Object.assign(new Error(message), { kind });
 const retryable = e => e.kind === 'network' || e.kind === 'transient';
 
-async function gql(query, variables = {}) {
+async function gql(query, variables = {}, { optionalFields = [] } = {}) {
   let r;
   try {
     r = await fetch(API, {
@@ -108,8 +109,9 @@ async function gql(query, variables = {}) {
   if (r.status >= 500 || r.status === 429) throw fail(`GitHub временно недоступен (${r.status})`, 'transient');
   if (!r.ok) throw fail(r.status === 403 ? 'Не хватает прав токена или исчерпан лимит запросов — попробуй позже или замени токен' : `GitHub не принял запрос (код ${r.status}) — попробуй ещё раз`, 'http');
   const j = await r.json();
-  if (j.errors?.length) {
-    const raw = j.errors.map(e => `${e.type || ''} ${e.message}`).join('; ');
+  const errors = (j.errors || []).filter(e => !(e.type === 'NOT_FOUND' && optionalFields.includes(e.path?.at(-1))));
+  if (errors.length) {
+    const raw = errors.map(e => `${e.type || ''} ${e.message}`).join('; ');
     const text = /NOT_FOUND|Could not resolve/i.test(raw) ? 'Задача не найдена на GitHub — возможно, её удалили. Обнови список'
       : /FORBIDDEN|permission|scope/i.test(raw) ? 'Не хватает прав токена — замени его в настройках'
       : 'GitHub отклонил изменение — обнови список и попробуй снова';
@@ -120,37 +122,40 @@ async function gql(query, variables = {}) {
 
 const extraScopes = () => (tokenScopes || []).filter(x => !ALLOWED_SCOPES.includes(x));
 
+const PROJECT_FIELD = 'Проект';
+
 const ITEMS_Q = `query($id:ID!,$after:String){node(id:$id){... on ProjectV2{title
   field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name color description}}}
+  pf:field(name:"${PROJECT_FIELD}"){... on ProjectV2SingleSelectField{id options{id name color description}}}
   repositories(first:1){nodes{id}}
   items(first:100,after:$after){pageInfo{hasNextPage endCursor}
     nodes{id isArchived
       fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId}}
-      content{__typename ... on Issue{id number title body state url createdAt parent{id number title}}}}}}}}`;
-
-const EPICS_Q = `query($id:ID!){node(id:$id){... on Repository{label(name:"epic"){id}
-  issues(first:100,labels:["epic"],states:[OPEN],orderBy:{field:CREATED_AT,direction:ASC}){nodes{id number title url}}}}}`;
+      proj:fieldValueByName(name:"${PROJECT_FIELD}"){... on ProjectV2ItemFieldSingleSelectValue{optionId}}
+      content{__typename ... on Issue{id number title body state url createdAt parent{id number title} subIssuesSummary{total completed}}}}}}}}`;
 
 const M = {
   status: `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}}`,
   close: `mutation($i:ID!,$r:IssueClosedStateReason){closeIssue(input:{issueId:$i,stateReason:$r}){clientMutationId}}`,
   reopen: `mutation($i:ID!){reopenIssue(input:{issueId:$i}){clientMutationId}}`,
   text: `mutation($i:ID!,$t:String!,$b:String!){updateIssue(input:{id:$i,title:$t,body:$b}){clientMutationId}}`,
-  setParent: `mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s,replaceParent:true}){clientMutationId}}`,
-  unsetParent: `mutation($p:ID!,$s:ID!){removeSubIssue(input:{issueId:$p,subIssueId:$s}){clientMutationId}}`,
+  createSub: `mutation($r:ID!,$t:String!,$par:ID!){createIssue(input:{repositoryId:$r,title:$t,parentIssueId:$par}){issue{id number title url state}}}`,
+  subs: `query($i:ID!){node(id:$i){... on Issue{subIssues(first:100){nodes{id number title url state}}}}}`,
+  clearField: `mutation($p:ID!,$i:ID!,$f:ID!){clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){clientMutationId}}`,
   position: `mutation($p:ID!,$i:ID!,$a:ID){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a}){clientMutationId}}`,
   create: `mutation($r:ID!,$t:String!,$b:String,$par:ID,$p:ID!){createIssue(input:{repositoryId:$r,title:$t,body:$b,parentIssueId:$par,projectV2Ids:[$p]}){issue{id number url projectItems(first:10){nodes{id project{id}}}}}}`,
-  createEpic: `mutation($r:ID!,$t:String!,$l:[ID!]){createIssue(input:{repositoryId:$r,title:$t,labelIds:$l}){issue{id number title url}}}`,
-  createLabel: `mutation($r:ID!){createLabel(input:{repositoryId:$r,name:"epic",color:"8250df",description:"Эпик / проект"}){label{id}}}`,
-  rename: `mutation($i:ID!,$t:String!){updateIssue(input:{id:$i,title:$t}){clientMutationId}}`,
+  createField: `mutation($p:ID!,$n:String!,$o:[ProjectV2SingleSelectFieldOptionInput!]){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:$n,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{id options{id name color description}}}}}`,
   statuses: `mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{options{id name color description}}}}}`,
   addItem: `mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}`,
-  placeNew: `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!,$top:Boolean!){
-    s:updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}
+  placeNew: `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!,$setStatus:Boolean!,$pf:ID!,$po:String!,$setProj:Boolean!,$top:Boolean!){
+    s:updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}) @include(if:$setStatus){clientMutationId}
+    j:updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$pf,value:{singleSelectOptionId:$po}}) @include(if:$setProj){clientMutationId}
     t:updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i}) @include(if:$top){clientMutationId}}`,
   remove: `mutation($p:ID!,$i:ID!,$c:ID!){deleteProjectV2Item(input:{projectId:$p,itemId:$i}){deletedItemId}
     closeIssue(input:{issueId:$c,stateReason:NOT_PLANNED}){clientMutationId}}`,
 };
+
+const projectsFrom = options => options.map(o => ({ id: o.id, title: o.name, color: o.color || 'GRAY', description: o.description || '' }));
 
 async function load() {
   if (loading || !token || !project || netState === 'auth') return;
@@ -163,7 +168,7 @@ async function load() {
     let after = null, meta = null;
     const items = [];
     do {
-      const p = (await gql(ITEMS_Q, { id: project.id, after })).node;
+      const p = (await gql(ITEMS_Q, { id: project.id, after }, { optionalFields: ['pf'] })).node;
       meta ||= p;
       for (const n of p.items.nodes) {
         const c = n.content;
@@ -171,18 +176,15 @@ async function load() {
         items.push({
           itemId: n.id, id: c.id, number: c.number, title: c.title, body: c.body || '', state: c.state, url: c.url, createdAt: c.createdAt,
           status: n.fieldValueByName?.optionId ?? null,
+          project: n.proj?.optionId ?? null,
           parent: c.parent ? { id: c.parent.id, number: c.parent.number, title: c.parent.title } : null,
+          subs: c.subIssuesSummary?.total ? { total: c.subIssuesSummary.total, completed: c.subIssuesSummary.completed } : null,
         });
       }
       after = p.items.pageInfo.hasNextPage ? p.items.pageInfo.endCursor : null;
     } while (after);
     const repoId = meta.repositories.nodes[0]?.id ?? null;
-    const repo = repoId ? (await gql(EPICS_Q, { id: repoId })).node : null;
-    const epics = repo ? repo.issues.nodes : [];
-    const epicIds = new Set(epics.map(e => e.id));
-    for (const it of items) if (it.parent && !epicIds.has(it.parent.id)) { epics.push(it.parent); epicIds.add(it.parent.id); }
-    const loaded = items.filter(i => !epicIds.has(i.id));
-    data = { title: meta.title, fieldId: meta.field.id, statuses: meta.field.options, repoId, epicLabelId: repo?.label?.id ?? null, epics, items: loaded };
+    data = { title: meta.title, fieldId: meta.field.id, statuses: meta.field.options, repoId, projectFieldId: meta.pf?.id ?? null, epics: projectsFrom(meta.pf?.options || []), items };
     for (const op of [...doneWhileLoading, ...queue]) applyOp(op);
     doneWhileLoading = [];
     lastLoad = Date.now();
@@ -205,7 +207,15 @@ const doneStatus = () => data.statuses.find(s => /^done$/i.test(s.name)) || data
 const statusName = id => data.statuses.find(s => s.id === id)?.name ?? '';
 const statusKey = it => (it.status && data.statuses.some(s => s.id === it.status)) ? it.status : NO_STATUS;
 const defaultStatusId = () => (data.statuses.find(s => /^to\s*do$/i.test(s.name)) || data.statuses[0])?.id ?? NO_STATUS;
-const epicKey = it => it.parent?.id ?? NO_EPIC;
+const epicKey = it => (it.project && data.epics.some(e => e.id === it.project)) ? it.project : NO_EPIC;
+const epicTitle = id => data.epics.find(e => e.id === id)?.title ?? 'Без проекта';
+const keyOf = it => it.id ?? it.itemId;
+const subsProgress = it => it.subs?.total ? { done: it.subs.completed, total: it.subs.total } : null;
+
+function recountSubs(it) {
+  if (!it.subLoaded) return;
+  it.subs = { total: it.subList.length, completed: it.subList.filter(x => x.state === 'CLOSED').length };
+}
 
 function syncHeaderHeight() { root.style.setProperty('--hdr', $('#top').offsetHeight + 'px'); }
 
@@ -263,7 +273,7 @@ function statusTabs() {
 function epicTabs() {
   const list = data.epics.map(e => ({ id: e.id, name: e.title, n: childrenOf(e.id).length }));
   const loose = childrenOf(NO_EPIC).length;
-  if (loose) list.push({ id: NO_EPIC, name: 'Без эпика', n: loose });
+  if (loose) list.push({ id: NO_EPIC, name: 'Без проекта', n: loose });
   if (!list.some(e => e.id === epicTab)) epicTab = (list.find(e => e.n) || list[0])?.id ?? NO_EPIC;
   return list;
 }
@@ -281,23 +291,23 @@ function groupSection(key, head, its, showEpic, more) {
 function statusSections() {
   const inTab = data.items.filter(i => statusKey(i) === tab);
   if (!grouped) return inTab.length ? [h('section', { class: 'group flat' }, h('div', { class: 'rows' }, inTab.map(it => rowEl(it, true))))] : [];
-  const groups = [...data.epics.map(e => ({ key: e.id, title: e.title })), { key: NO_EPIC, title: 'Без эпика' }];
+  const groups = [...data.epics.map(e => ({ key: e.id, title: e.title })), { key: NO_EPIC, title: 'Без проекта' }];
   return groups.map(g => {
     const its = inTab.filter(i => epicKey(i) === g.key);
     if (!its.length) return null;
     const epic = data.epics.find(e => e.id === g.key);
     return groupSection(g.key, [swatch(g.key), h('span', { class: 'gt', text: g.title })], its, false,
-      epic ? h('button', { class: 'gh-more', 'aria-label': `Эпик «${epic.title}»: редактировать`, onclick: () => openEpic(epic) }, icon('more')) : null);
+      epic ? h('button', { class: 'gh-more', 'aria-label': `Проект «${epic.title}»: редактировать`, onclick: () => openEpic(epic) }, icon('more')) : null);
   }).filter(Boolean);
 }
 
 function epicSections() {
   const kids = childrenOf(epicTab);
-  const epic = data.epics.find(e => e.id === epicTab) || { id: NO_EPIC, title: 'Без эпика' };
+  const epic = data.epics.find(e => e.id === epicTab) || { id: NO_EPIC, title: 'Без проекта' };
   const open = kids.filter(k => statusKey(k) !== doneStatus()?.id).length;
   const bar = h('div', { class: 'epic-bar' },
     h('span', { class: 'muted', text: kids.length ? `${open} открыто · ${kids.length - open} готово` : 'Задач нет' }),
-    h('button', { class: 'gh-more', 'aria-label': 'Эпик: редактировать', onclick: () => openEpic(epic) }, icon('more')));
+    h('button', { class: 'gh-more', 'aria-label': 'Проект: редактировать', onclick: () => openEpic(epic) }, icon('more')));
   const statuses = [...(kids.some(k => statusKey(k) === NO_STATUS) ? [{ id: NO_STATUS, name: 'Без статуса', color: null }] : []), ...data.statuses];
   const sections = statuses.map(s => {
     const its = kids.filter(k => statusKey(k) === s.id);
@@ -328,16 +338,16 @@ function openView() {
   openSheet(h('div', {},
     h('h2', { text: 'Вид' }),
     h('div', { class: 'list', role: 'menu' },
-      opt('По статусам, с эпиками', 'Вкладки — статусы, внутри группы по эпикам', view === 'status' && grouped, () => { if (!grouped) toggleGrouping(); setView('status'); }),
-      opt('По статусам, общим списком', 'Сквозной приоритет без деления на эпики', view === 'status' && !grouped, () => { if (grouped) toggleGrouping(); setView('status'); }),
-      opt('По эпикам', 'Вкладки — эпики, внутри все задачи по статусам', view === 'epic', () => setView('epic')))));
+      opt('По статусам, с проектами', 'Вкладки — статусы, внутри группы по проектам', view === 'status' && grouped, () => { if (!grouped) toggleGrouping(); setView('status'); }),
+      opt('По статусам, общим списком', 'Сквозной приоритет без деления на проекты', view === 'status' && !grouped, () => { if (grouped) toggleGrouping(); setView('status'); }),
+      opt('По проектам', 'Вкладки — проекты, внутри все задачи по статусам', view === 'epic', () => setView('epic')))));
 }
 
 function toggleGrouping() {
   grouped = !grouped;
   store.set(LS.grouped, grouped);
   render();
-  toast(grouped ? 'Группировка по эпикам включена' : 'Общий список без эпиков');
+  toast(grouped ? 'Группировка по проектам включена' : 'Общий список без проектов');
 }
 
 function selectTab(id) {
@@ -355,11 +365,15 @@ function bodyPreview(body) {
 function rowEl(it, showEpic) {
   const isDone = doneStatus()?.id === it.status;
   const preview = bodyPreview(it.body);
+  const proj = epicKey(it) !== NO_EPIC ? epicKey(it) : null;
+  const progress = subsProgress(it);
   const row = h('button', { class: 'row' + (it.pending ? ' pending' : '') },
     h('span', { class: 'rt' },
       h('span', { class: 'rtt', text: it.title }),
       preview ? h('span', { class: 'rb', text: preview }) : null,
-      showEpic && it.parent ? h('span', { class: 're' }, swatch(it.parent.id), it.parent.title) : null),
+      it.parent ? h('span', { class: 'rp' }, icon('sub', 14), it.parent.title) : null,
+      showEpic && proj ? h('span', { class: 're' }, swatch(proj), epicTitle(proj)) : null),
+    progress ? h('span', { class: 'prog' + (progress.done === progress.total ? ' full' : ''), 'aria-label': `Подзадачи: ${progress.done} из ${progress.total}` }, `${progress.done}/${progress.total}`) : null,
     it.pending ? h('span', { class: 'spinner', role: 'img', 'aria-label': 'Сохраняется' }) : null);
   const wrap = h('div', { class: 'swipe' },
     h('div', { class: 'swipe-act left' }, icon('top', 18), 'Наверх'),
@@ -696,7 +710,7 @@ function chipGroup(options, value, onPick, { holdFocus = false } = {}) {
 }
 
 const statusOptions = () => data.statuses.map(s => ({ id: s.id, name: s.name, color: optionColor(s.color) }));
-const epicOptions = () => [...data.epics.map(e => ({ id: e.id, name: e.title })), { id: NO_EPIC, name: 'Без эпика' }];
+const epicOptions = () => [...data.epics.map(e => ({ id: e.id, name: e.title })), { id: NO_EPIC, name: 'Без проекта' }];
 
 const HALF_LIFE_DAYS = 7;
 const SESSION_MS = 3 * 3600e3;
@@ -738,6 +752,62 @@ function quickMove(it, target, label) {
   toast(label, { action: 'Отменить', onAction: () => setStatus(it, prev) });
 }
 
+const BULLET = /^\s*(?:[-*•–]|\d+[.)])\s+(.+?)\s*$/;
+
+function subtasksBlock(it, body) {
+  const head = h('div', { class: 'field-label sub-head' });
+  const list = h('div', { class: 'list subs' });
+  const note = h('p', { class: 'muted small sub-note', text: 'Загрузка…' });
+  const splitBtn = h('button', { class: 'btn split-btn' });
+  const input = h('input', { type: 'text', name: 'subtask', placeholder: 'Добавить подзадачу…', 'aria-label': 'Новая подзадача', autocomplete: 'off', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const bullets = () => body.value.split('\n').map(l => l.match(BULLET)?.[1]).filter(Boolean);
+  let loadingSubs = !!it.id;
+  let adding = false;
+  const addRow = h('div', { class: 'inline-add sub-add' }, input, h('button', { class: 'btn', 'aria-label': 'Добавить подзадачу', onclick: () => add() }, icon('plus', 18)));
+  const openAdd = h('button', { class: 'link-btn sub-open', onclick: () => { adding = true; draw(); input.focus(); } }, icon('plus', 16), 'Подзадача');
+  const draw = () => {
+    const subs = it.subList || [];
+    const done = subs.filter(x => x.state === 'CLOSED').length;
+    const expanded = adding || subs.length > 0;
+    head.textContent = subs.length ? `Подзадачи · ${done} из ${subs.length}` : 'Подзадачи';
+    head.hidden = !expanded && !loadingSubs;
+    addRow.hidden = !expanded;
+    openAdd.hidden = expanded;
+    list.hidden = !subs.length;
+    note.hidden = !(loadingSubs && !subs.length);
+    list.replaceChildren(...subs.map(sub => {
+      const subDone = sub.state === 'CLOSED';
+      return h('div', { class: 'sub-row' + (subDone ? ' done' : '') + (sub.pending ? ' pending' : '') },
+        h('button', { class: 'sub-check', role: 'checkbox', 'aria-checked': String(subDone), 'aria-label': subDone ? `Вернуть «${sub.title}» в работу` : `Выполнить «${sub.title}»`, onclick: () => { setSubDone(it, sub, !subDone); draw(); } }, subDone ? icon('check', 16) : null),
+        sub.url ? h('a', { class: 'sub-title', href: sub.url, target: '_blank', rel: 'noopener' }, sub.title) : h('span', { class: 'sub-title' }, sub.title));
+    }));
+    const n = bullets().length;
+    splitBtn.hidden = !n;
+    splitBtn.replaceChildren(icon('split', 18), `Разбить описание на подзадачи · ${n}`);
+  };
+  const add = () => {
+    const t = input.value.trim();
+    if (!t) { input.focus(); return; }
+    createSubtask(it, t);
+    input.value = '';
+    draw();
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  splitBtn.addEventListener('click', () => {
+    const items = bullets();
+    if (!items.length || !confirm(`Создать ${items.length} ${plural(items.length, ['подзадачу', 'подзадачи', 'подзадач'])} из пунктов описания? Пункты уберутся из описания.`)) return;
+    for (const t of items) createSubtask(it, t);
+    body.value = body.value.split('\n').filter(l => !BULLET.test(l)).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    body.dispatchEvent(new Event('input'));
+    toast(`Создано подзадач: ${items.length}`);
+    draw();
+  });
+  body.addEventListener('input', draw);
+  draw();
+  if (it.id) loadSubs(it).catch(() => {}).finally(() => { loadingSubs = false; if (head.isConnected) draw(); });
+  return h('div', { class: 'subtasks' }, head, note, list, addRow, h('div', { class: 'sub-actions' }, openAdd, splitBtn));
+}
+
 function openTask(it) {
   const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences', 'aria-label': 'Название задачи' });
   title.value = it.title;
@@ -757,17 +827,22 @@ function openTask(it) {
     const st = findStatus(re);
     if (st && st.id !== it.status && !isDone) quick.push(h('button', { class: 'qa', onclick: () => quickMove(it, st, `Перенесено в ${st.name}`) }, icon(ico), st.name));
   }
-  const meta = [it.number ? `#${it.number}` : 'Сохраняется…', it.parent ? it.parent.title : null].filter(Boolean).join(' · ');
+  const proj = epicKey(it) !== NO_EPIC ? epicKey(it) : null;
+  const meta = [it.number ? `#${it.number}` : 'Сохраняется…', proj ? epicTitle(proj) : null].filter(Boolean).join(' · ');
+  const parentItem = it.parent ? data.items.find(x => keyOf(x) === it.parent.id) : null;
   const statusChips = chipGroup(statusOptions(), it.status, id => { if (id !== it.status) { setStatus(it, id); toast(`Перенесено в ${statusName(id)}`); } });
   const epicChips = chipGroup(epicOptions().map(o => ({ ...o, swatch: true })), epicKey(it), id => setEpic(it, id === NO_EPIC ? null : id));
   openSheet(h('div', { class: 'task' },
     h('div', { class: 'sheet-head' },
-      h('span', { class: 'sh-meta' }, it.parent ? swatch(it.parent.id) : null, meta),
+      h('span', { class: 'sh-meta' }, proj ? swatch(proj) : null, meta),
       h('button', { class: 'link-btn', onclick: () => closeSheet() }, 'Закрыть')),
+    it.parent ? h('button', { class: 'parent-link', disabled: parentItem ? null : true, onclick: () => { closeSheet(); openTask(parentItem); } },
+      icon('sub', 15), h('span', { text: `Часть задачи «${it.parent.title}»` })) : null,
     title,
     quick.length ? h('div', { class: 'quick' + (quick.length === 1 ? ' one' : '') }, quick) : null,
     chipLine('Статус', statusChips),
-    chipLine('Эпик', epicChips),
+    chipLine('Проект', epicChips),
+    subtasksBlock(it, body),
     h('div', { class: 'field-label', text: 'Заметки' }),
     body,
     h('div', { class: 'actions' },
@@ -822,7 +897,7 @@ function openNew() {
     h('div', { class: 'new-head' }, h('h2', { text: 'Новая задача' }), add),
     title,
     body,
-    chipLine('Эпик', epicChips),
+    chipLine('Проект', epicChips),
     chipLine('Статус', statusChips),
     h('div', { class: 'toggles' },
       keepFocus(h('label', { class: 'toggle' }, top, 'В начало')),
@@ -838,7 +913,7 @@ function openSettings() {
     h('h2', { text: 'Настройки' }),
     data ? h('div', { class: 'list' },
       h('button', { class: 'list-row', onclick: openView }, h('span', { class: 'lr-title', text: 'Вид списка' }), h('span', { class: 'rchev' }, icon('chevron', 18))),
-      h('button', { class: 'list-row', onclick: openEpics }, h('span', { class: 'lr-title', text: 'Эпики' }), h('span', { class: 'n', text: data.epics.length }), h('span', { class: 'rchev' }, icon('chevron', 18))),
+      h('button', { class: 'list-row', onclick: openEpics }, h('span', { class: 'lr-title', text: 'Проекты' }), h('span', { class: 'n', text: data.epics.length }), h('span', { class: 'rchev' }, icon('chevron', 18))),
       h('button', { class: 'list-row', onclick: openStatuses }, h('span', { class: 'lr-title', text: 'Статусы' }), h('span', { class: 'n', text: data.statuses.length }), h('span', { class: 'rchev' }, icon('chevron', 18)))) : null,
     h('div', { class: 'field-label', text: 'Жесты' }),
     h('p', { class: 'muted small', text: 'Свайп задачи влево — выполнено, вправо — наверх. Удержи задачу и тащи, чтобы поменять приоритет. Свайп от края экрана или по заголовкам — соседняя вкладка. Потяни список вниз, чтобы обновить.' }),
@@ -856,7 +931,7 @@ function openSettings() {
 const childrenOf = epicId => data.items.filter(it => epicKey(it) === epicId);
 
 function openEpics() {
-  const input = h('input', { type: 'text', name: 'epic', placeholder: 'Название нового эпика…', 'aria-label': 'Название нового эпика', autocomplete: 'off', enterkeyhint: 'done', autocapitalize: 'sentences' });
+  const input = h('input', { type: 'text', name: 'project', placeholder: 'Название нового проекта…', 'aria-label': 'Название нового проекта', autocomplete: 'off', enterkeyhint: 'done', autocapitalize: 'sentences' });
   const create = async () => {
     const t = input.value.trim();
     if (!t) { input.focus(); return; }
@@ -867,8 +942,8 @@ function openEpics() {
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
   openSheet(h('div', {},
-    h('h2', { text: 'Эпики' }),
-    h('div', { class: 'list' }, [...data.epics, { id: NO_EPIC, title: 'Без эпика', virtual: true }].map(e => {
+    h('h2', { text: 'Проекты' }),
+    h('div', { class: 'list' }, [...data.epics, { id: NO_EPIC, title: 'Без проекта', virtual: true }].map(e => {
       const n = childrenOf(e.id).length;
       return h('button', { class: 'list-row', onclick: () => openEpic(e) },
         swatch(e.id),
@@ -876,7 +951,7 @@ function openEpics() {
         h('span', { class: 'n', text: n }),
         h('span', { class: 'rchev' }, icon('chevron', 18)));
     })),
-    h('div', { class: 'field-label', text: 'Новый эпик' }),
+    h('div', { class: 'field-label', text: 'Новый проект' }),
     h('div', { class: 'inline-add' }, input, h('button', { class: 'btn primary', onclick: create }, 'Создать'))));
 }
 
@@ -885,24 +960,25 @@ function openEpic(epic) {
   const kids = childrenOf(epic.id);
   const selected = new Set();
   let target = null;
-  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences', 'aria-label': 'Название эпика' });
+  let color = epic.color;
+  const title = h('textarea', { class: 't-title', rows: '1', enterkeyhint: 'done', autocapitalize: 'sentences', 'aria-label': 'Название проекта' });
   title.value = epic.title;
   title.readOnly = isVirtual;
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } });
+  const colorBtn = isVirtual ? null : h('button', { class: 'st-dot', style: `--c:${optionColor(color)}`, 'aria-label': 'Цвет проекта' });
+  colorBtn?.addEventListener('click', () => { color = COLOR_ORDER[(COLOR_ORDER.indexOf(color) + 1) % COLOR_ORDER.length]; colorBtn.style.setProperty('--c', optionColor(color)); });
   const moveBtn = h('button', { class: 'btn primary wide' });
   const updateMoveBtn = () => {
     moveBtn.textContent = selected.size ? `Перенести ${selected.size} ${plural(selected.size, ['задачу', 'задачи', 'задач'])}` : 'Выбери задачи';
     moveBtn.disabled = !selected.size || target === null;
   };
-  const targets = [...data.epics.filter(e => e.id !== epic.id).map(e => ({ id: e.id, name: e.title, swatch: true })), ...(isVirtual ? [] : [{ id: NO_EPIC, name: 'Без эпика', swatch: true }])];
+  const targets = [...data.epics.filter(e => e.id !== epic.id).map(e => ({ id: e.id, name: e.title, swatch: true })), ...(isVirtual ? [] : [{ id: NO_EPIC, name: 'Без проекта', swatch: true }])];
   const allBox = h('input', { type: 'checkbox' });
-  allBox.checked = selected.size === kids.length && kids.length > 0;
   const boxes = [];
   const rows = kids.map(k => {
     const cb = h('input', { type: 'checkbox', disabled: k.pending ? true : null });
-    cb.checked = selected.has(k.id);
     cb.addEventListener('change', () => {
-      cb.checked ? selected.add(k.id) : selected.delete(k.id);
+      cb.checked ? selected.add(k.itemId) : selected.delete(k.itemId);
       allBox.checked = selected.size === kids.length;
       updateMoveBtn();
     });
@@ -910,91 +986,90 @@ function openEpic(epic) {
     return h('label', { class: 'pick-row' }, cb, h('span', { class: 'lr-title', text: k.title }), h('span', { class: 'n', text: statusName(k.status) || '—' }));
   });
   allBox.addEventListener('change', () => {
-    for (const [cb, k] of boxes) { if (k.pending) continue; cb.checked = allBox.checked; allBox.checked ? selected.add(k.id) : selected.delete(k.id); }
+    for (const [cb, k] of boxes) { if (k.pending) continue; cb.checked = allBox.checked; allBox.checked ? selected.add(k.itemId) : selected.delete(k.itemId); }
     updateMoveBtn();
   });
   moveBtn.addEventListener('click', async () => {
-    const chosen = kids.filter(k => selected.has(k.id));
+    const chosen = kids.filter(k => selected.has(k.itemId));
     const dest = target === NO_EPIC ? null : data.epics.find(e => e.id === target);
     closeSheet(true);
     await bulkMove(chosen, dest);
   });
   updateMoveBtn();
   openSheet(h('div', {},
-    title,
-    isVirtual ? null : h('p', { class: 'muted small', text: `#${epic.number} · ${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])} на доске` }),
+    h('div', { class: 'project-head' }, colorBtn, title),
+    h('p', { class: 'muted small', text: `${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])} на доске` }),
     view === 'epic' && epicTab === epic.id ? null : h('button', { class: 'btn wide', onclick: () => { closeSheet(); setView('epic', epic.id); } }, 'Показать все задачи списком'),
     kids.length ? h('div', {},
       h('div', { class: 'field-label', text: 'Задачи' }),
       h('label', { class: 'pick-row all' }, allBox, h('span', { class: 'lr-title', text: 'Выбрать все' })),
       h('div', { class: 'list' }, rows),
       h('div', { class: 'field-label', text: 'Перенести выбранные в' }),
-      targets.length ? chipGroup(targets, null, id => { target = id; updateMoveBtn(); }) : h('p', { class: 'muted', text: 'Нет других эпиков' }),
-      moveBtn) : h('p', { class: 'muted', text: 'Задач в этом эпике нет' }),
-    isVirtual ? null : h('div', { class: 'actions two' },
-      epic.url ? h('a', { class: 'btn', href: epic.url, target: '_blank', rel: 'noopener' }, `#${epic.number}`, icon('external', 16)) : h('span'),
-      h('button', { class: 'btn danger', onclick: () => closeEpic(epic) }, 'Закрыть эпик'))),
+      targets.length ? chipGroup(targets, null, id => { target = id; updateMoveBtn(); }) : h('p', { class: 'muted', text: 'Нет других проектов' }),
+      moveBtn) : h('p', { class: 'muted', text: 'Задач в этом проекте нет' }),
+    isVirtual ? null : h('button', { class: 'btn danger wide delete', onclick: () => closeEpic(epic) }, icon('trash', 18), 'Удалить проект')),
     () => {
       const t = title.value.trim();
-      if (!isVirtual && t && t !== epic.title) renameEpic(epic, t);
+      if (!isVirtual && ((t && t !== epic.title) || color !== epic.color)) renameEpic(epic, t || epic.title, color);
     });
   autoGrow(title);
 }
 
 const plural = (n, [one, few, many]) => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; };
 
-async function ensureEpicLabel() {
-  if (data.epicLabelId) return data.epicLabelId;
-  data.epicLabelId = (await gql(M.createLabel, { r: data.repoId })).createLabel.label.id;
-  persist();
-  return data.epicLabelId;
+const optionInput = e => ({ ...(e.id ? { id: e.id } : {}), name: e.title, color: e.color || 'GRAY', description: e.description || '' });
+
+async function saveProjects(list) {
+  if (!data.projectFieldId) {
+    const field = (await gql(M.createField, { p: project.id, n: PROJECT_FIELD, o: list.map(optionInput) })).createProjectV2Field.projectV2Field;
+    data.projectFieldId = field.id;
+    return projectsFrom(field.options);
+  }
+  return projectsFrom((await gql(M.statuses, { f: data.projectFieldId, o: list.map(optionInput) })).updateProjectV2Field.projectV2Field.options);
+}
+
+function nextProjectColor() {
+  const used = new Set(data.epics.map(e => e.color));
+  return COLOR_ORDER.find(c => c !== 'GRAY' && !used.has(c)) || COLOR_ORDER[data.epics.length % COLOR_ORDER.length];
 }
 
 async function createEpic(title) {
   try {
-    const label = await ensureEpicLabel();
-    const issue = (await gql(M.createEpic, { r: data.repoId, t: title, l: [label] })).createIssue.issue;
-    data.epics.push(issue);
+    data.epics = await saveProjects([...data.epics, { id: null, title, color: nextProjectColor() }]);
     persistRender();
-    toast(`Эпик «${title}» создан`);
+    toast(`Проект «${title}» создан`);
   } catch (e) { toast('Не создался: ' + e.message); }
 }
 
-function renameEpic(epic, title) {
-  const prev = epic.title;
-  const sync = t => { epic.title = t; for (const it of data.items) if (it.parent?.id === epic.id) it.parent.title = t; };
-  return mutateNow(() => sync(title), () => sync(prev), () => gql(M.rename, { i: epic.id, t: title }));
+async function renameEpic(epic, title, color) {
+  const next = data.epics.map(e => e.id === epic.id ? { ...e, title, color } : e);
+  const prev = data.epics;
+  await mutateNow(() => { data.epics = next; }, () => { data.epics = prev; }, async () => { data.epics = await saveProjects(next); });
 }
 
 async function bulkMove(tasks, dest) {
-  const moving = tasks.filter(t => !t.pending && (t.parent?.id ?? null) !== (dest?.id ?? null));
-  if (!moving.length) return;
-  const prev = new Map(moving.map(t => [t, t.parent]));
+  const moving = tasks.filter(t => !t.pending && (t.project ?? null) !== (dest?.id ?? null));
+  if (!moving.length || !data.projectFieldId) return;
+  const prev = new Map(moving.map(t => [t, t.project]));
   const ops = moving.map((t, i) => dest
-    ? `m${i}: addSubIssue(input:{issueId:${JSON.stringify(dest.id)},subIssueId:${JSON.stringify(t.id)},replaceParent:true}){clientMutationId}`
-    : `m${i}: removeSubIssue(input:{issueId:${JSON.stringify(t.parent.id)},subIssueId:${JSON.stringify(t.id)}}){clientMutationId}`);
+    ? `m${i}: updateProjectV2ItemFieldValue(input:{projectId:${JSON.stringify(project.id)},itemId:${JSON.stringify(t.itemId)},fieldId:${JSON.stringify(data.projectFieldId)},value:{singleSelectOptionId:${JSON.stringify(dest.id)}}}){clientMutationId}`
+    : `m${i}: clearProjectV2ItemFieldValue(input:{projectId:${JSON.stringify(project.id)},itemId:${JSON.stringify(t.itemId)},fieldId:${JSON.stringify(data.projectFieldId)}}){clientMutationId}`);
   await mutateNow(
-    () => moving.forEach(t => { t.parent = dest ? { id: dest.id, number: dest.number, title: dest.title } : null; }),
-    () => moving.forEach(t => { t.parent = prev.get(t); }),
+    () => moving.forEach(t => { t.project = dest?.id ?? null; }),
+    () => moving.forEach(t => { t.project = prev.get(t); }),
     async () => { for (let i = 0; i < ops.length; i += 20) await gql(`mutation{${ops.slice(i, i + 20).join(' ')}}`); });
-  toast(`Перенесено: ${moving.length} → ${dest ? dest.title : 'без эпика'}`);
+  toast(`Перенесено: ${moving.length} → ${dest ? dest.title : 'без проекта'}`);
 }
 
 async function closeEpic(epic) {
   const kids = childrenOf(epic.id);
-  if (kids.length && !confirm(`В эпике ${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])}. Закрыть эпик? Задачи останутся на доске и переедут в «Без эпика».`)) return;
-  if (!kids.length && !confirm(`Закрыть эпик «${epic.title}»?`)) return;
+  if (kids.length && !confirm(`В проекте ${kids.length} ${plural(kids.length, ['задача', 'задачи', 'задач'])}. Удалить проект? Задачи останутся на доске и переедут в «Без проекта».`)) return;
+  if (!kids.length && !confirm(`Удалить проект «${epic.title}»?`)) return;
   closeSheet(true);
-  const idx = data.epics.indexOf(epic);
-  await mutateNow(
-    () => { data.epics.splice(idx, 1); kids.forEach(k => { k.parent = null; }); },
-    () => { data.epics.splice(idx, 0, epic); kids.forEach(k => { k.parent = { id: epic.id, number: epic.number, title: epic.title }; }); },
-    async () => {
-      const ops = kids.map((k, i) => `m${i}: removeSubIssue(input:{issueId:${JSON.stringify(epic.id)},subIssueId:${JSON.stringify(k.id)}}){clientMutationId}`);
-      for (let i = 0; i < ops.length; i += 20) await gql(`mutation{${ops.slice(i, i + 20).join(' ')}}`);
-      await gql(M.close, { i: epic.id, r: 'COMPLETED' });
-    });
-  toast(`Эпик «${epic.title}» закрыт`);
+  const prev = data.epics;
+  const next = data.epics.filter(e => e.id !== epic.id);
+  await mutateNow(() => { data.epics = next; }, () => { data.epics = prev; }, async () => { data.epics = await saveProjects(next); });
+  toast(`Проект «${epic.title}» удалён`);
 }
 
 function openStatuses() {
@@ -1065,22 +1140,42 @@ async function mutateNow(apply, rollback, run) {
 }
 
 const byItem = id => data.items.find(x => x.itemId === id);
-const epicRef = epic => epic ? { id: epic.id, number: epic.number, title: epic.title } : null;
 
 function applyOp(op) {
   if (op.type === 'create') {
     const ref = op.real?.itemId ?? op.tmp;
     if (byItem(ref) || (op.real && data.items.some(x => x.id === op.real.id))) return;
     const it = { itemId: ref, id: op.real?.id ?? null, number: op.real?.number ?? null, title: op.title, body: op.body || '', state: 'OPEN',
-      url: op.real?.url ?? null, status: op.statusId, parent: op.epic, createdAt: op.createdAt };
+      url: op.real?.url ?? null, status: op.statusId, project: op.project ?? null, parent: null, subs: null, createdAt: op.createdAt };
     if (!op.real) it.pending = true;
     op.top ? data.items.unshift(it) : data.items.push(it);
     return;
   }
+  if (op.type === 'subCreate' || op.type === 'subState') {
+    const parent = data.items.find(x => keyOf(x) === op.parent);
+    if (!parent) return;
+    if (!parent.subLoaded) {
+      const subs = parent.subs || { total: 0, completed: 0 };
+      if (op.type === 'subCreate' && !op.real) subs.total++;
+      if (op.type === 'subState') subs.completed = Math.max(0, Math.min(subs.total, subs.completed + (op.close ? 1 : -1)));
+      parent.subs = subs.total ? subs : null;
+      return;
+    }
+    if (op.type === 'subCreate') {
+      const id = op.real?.id ?? op.tmp;
+      if (!parent.subList.some(x => x.id === id)) parent.subList.push({ id, number: op.real?.number ?? null, title: op.title, url: op.real?.url ?? null, state: 'OPEN', pending: !op.real });
+    } else {
+      const sub = parent.subList.find(x => x.id === op.issue);
+      if (sub) sub.state = op.close ? 'CLOSED' : 'OPEN';
+    }
+    recountSubs(parent);
+    return;
+  }
   const it = byItem(op.item);
   if (!it) return;
-  if (op.type === 'status' || (op.type === 'place' && op.optionId)) it.status = op.optionId;
-  else if (op.type === 'epic') it.parent = op.epic;
+  if (op.type === 'status') it.status = op.optionId;
+  else if (op.type === 'place') { if (op.optionId) it.status = op.optionId; if (op.projectId) it.project = op.projectId; }
+  else if (op.type === 'project') it.project = op.optionId;
   else if (op.type === 'text') Object.assign(it, { title: op.title, body: op.body });
   else if (op.type === 'remove') data.items = data.items.filter(x => x !== it);
   else if (op.type === 'position') {
@@ -1105,12 +1200,14 @@ const isTemp = id => typeof id === 'string' && id.startsWith('tmp-');
 
 async function execOp(op) {
   if (op.type === 'create') {
-    const issue = (await gql(M.create, { r: data.repoId, t: op.title, b: op.body || null, par: op.epic?.id ?? null, p: project.id })).createIssue.issue;
+    const issue = (await gql(M.create, { r: data.repoId, t: op.title, b: op.body || null, par: null, p: project.id })).createIssue.issue;
     let itemId = issue.projectItems?.nodes.find(n => n.project.id === project.id)?.id;
     if (!itemId) itemId = (await gql(M.addItem, { p: project.id, c: issue.id })).addProjectV2ItemById.item.id;
     op.real = { itemId, id: issue.id, number: issue.number, url: issue.url };
     const optionId = op.statusId && op.statusId !== NO_STATUS ? op.statusId : null;
-    if (optionId || op.top) queue.splice(queue.indexOf(op) + 1, 0, { qid: op.qid + '-place', type: 'place', item: itemId, issue: issue.id, optionId, top: !!op.top });
+    const projectId = op.project && data.projectFieldId ? op.project : null;
+    if (optionId || projectId || op.top) queue.splice(queue.indexOf(op) + 1, 0, { qid: op.qid + '-place', type: 'place', item: itemId, issue: issue.id, optionId, projectId, top: !!op.top });
+    for (const q of queue) if ((q.type === 'subCreate' || q.type === 'subState') && q.parent === op.tmp) q.parent = issue.id;
     for (const q of queue) {
       if (q.item === op.tmp) { q.item = itemId; q.issue = issue.id; }
       if (q.after === op.tmp) q.after = itemId;
@@ -1118,6 +1215,21 @@ async function execOp(op) {
     const temp = byItem(op.tmp);
     if (data.items.some(x => x !== temp && x.id === issue.id)) data.items = data.items.filter(x => x !== temp);
     else if (temp) { Object.assign(temp, { itemId, id: issue.id, number: issue.number, url: issue.url }); delete temp.pending; }
+    return;
+  }
+  if (op.type === 'subCreate') {
+    if (isTemp(op.parent)) return;
+    const issue = (await gql(M.createSub, { r: data.repoId, t: op.title, par: op.parent })).createIssue.issue;
+    op.real = { id: issue.id, number: issue.number, url: issue.url };
+    for (const q of queue) if (q.type === 'subState' && q.issue === op.tmp) q.issue = issue.id;
+    const parent = data.items.find(x => keyOf(x) === op.parent);
+    const sub = parent?.subList?.find(x => x.id === op.tmp);
+    if (sub) { Object.assign(sub, op.real); delete sub.pending; }
+    return;
+  }
+  if (op.type === 'subState') {
+    if (isTemp(op.issue)) return;
+    await gql(op.close ? M.close : M.reopen, op.close ? { i: op.issue, r: 'COMPLETED' } : { i: op.issue });
     return;
   }
   if (isTemp(op.item) || isTemp(op.after)) return;
@@ -1128,9 +1240,10 @@ async function execOp(op) {
     if (!op.done && state === 'CLOSED') { await gql(M.reopen, { i: op.issue }); if (it) it.state = 'OPEN'; }
     await gql(M.status, { p: project.id, i: op.item, f: data.fieldId, o: op.optionId });
     if (op.done && state === 'OPEN') { await gql(M.close, { i: op.issue, r: 'COMPLETED' }); if (it) it.state = 'CLOSED'; }
-  } else if (op.type === 'epic') {
-    if (op.epic) await gql(M.setParent, { p: op.epic.id, s: op.issue });
-    else if (op.prev) await gql(M.unsetParent, { p: op.prev, s: op.issue });
+  } else if (op.type === 'project') {
+    if (!data.projectFieldId) return;
+    if (op.optionId) await gql(M.status, { p: project.id, i: op.item, f: data.projectFieldId, o: op.optionId });
+    else await gql(M.clearField, { p: project.id, i: op.item, f: data.projectFieldId });
   } else if (op.type === 'text') await gql(M.text, { i: op.issue, t: op.title, b: op.body });
   else if (op.type === 'position') await gql(M.position, { p: project.id, i: op.item, a: op.after });
   else if (op.type === 'remove') await gql(M.remove, { p: project.id, i: op.item, c: op.issue });
@@ -1142,8 +1255,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function placeWithRetry(op) {
   for (let attempt = 0; ; attempt++) {
     try {
-      if (op.optionId) await gql(M.placeNew, { p: project.id, i: op.item, f: data.fieldId, o: op.optionId, top: op.top });
-      else await gql(M.position, { p: project.id, i: op.item, a: null });
+      await gql(M.placeNew, { p: project.id, i: op.item, f: data.fieldId, o: op.optionId || '', setStatus: !!op.optionId,
+        pf: data.projectFieldId || data.fieldId, po: op.projectId || '', setProj: !!(op.projectId && data.projectFieldId), top: !!op.top });
       return;
     } catch (e) {
       if (e.kind !== 'gql' || attempt >= PLACE_RETRY_MS.length) throw e;
@@ -1266,9 +1379,9 @@ function setStatus(it, optionId) {
 }
 
 function setEpic(it, epicId) {
-  const epic = epicId ? data.epics.find(e => e.id === epicId) : null;
-  if ((it.parent?.id ?? null) === (epic?.id ?? null)) return;
-  enqueue({ type: 'epic', item: it.itemId, issue: it.id, epic: epicRef(epic), prev: it.parent?.id ?? null });
+  const optionId = epicId && data.epics.some(e => e.id === epicId) ? epicId : null;
+  if ((it.project ?? null) === optionId) return;
+  enqueue({ type: 'project', item: it.itemId, issue: it.id, optionId });
 }
 
 function saveText(it, title, body) {
@@ -1292,9 +1405,31 @@ function placeAt(it, index) {
   enqueue({ type: 'position', item: it.itemId, after: after?.itemId ?? null });
 }
 
+const tmpId = () => 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
 function createTask({ title, body, epicId, statusId, top }) {
-  const epic = epicId ? data.epics.find(e => e.id === epicId) : null;
-  enqueue({ type: 'create', tmp: 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2), title, body: body || '', epic: epicRef(epic), statusId, top: !!top, createdAt: new Date().toISOString() });
+  const projectId = epicId && data.epics.some(e => e.id === epicId) ? epicId : null;
+  enqueue({ type: 'create', tmp: tmpId(), title, body: body || '', project: projectId, statusId, top: !!top, createdAt: new Date().toISOString() });
+}
+
+function createSubtask(parent, title) {
+  enqueue({ type: 'subCreate', tmp: tmpId(), parent: keyOf(parent), title });
+}
+
+function setSubDone(parent, sub, close) {
+  enqueue({ type: 'subState', parent: keyOf(parent), issue: sub.id, close });
+}
+
+async function loadSubs(it) {
+  if (!it.id) return;
+  const node = (await gql(M.subs, { i: it.id })).node;
+  const pending = (it.subList || []).filter(x => x.pending);
+  it.subList = [...node.subIssues.nodes, ...pending];
+  it.subLoaded = true;
+  for (const op of queue) if (op.type === 'subCreate' && op.parent === it.id && !op.real && !it.subList.some(x => x.id === op.tmp)) it.subList.push({ id: op.tmp, title: op.title, state: 'OPEN', pending: true });
+  for (const op of queue) if (op.type === 'subState' && op.parent === it.id) { const sub = it.subList.find(x => x.id === op.issue); if (sub) sub.state = op.close ? 'CLOSED' : 'OPEN'; }
+  recountSubs(it);
+  persist();
 }
 
 function removeTask(it) {
@@ -1310,7 +1445,7 @@ function searchItems(q) {
   if (!words.length) return [];
   const doneId = doneStatus()?.id;
   return data.items
-    .map(it => ({ it, title: norm(it.title), all: norm(it.title + ' ' + it.body + ' ' + (it.parent?.title || '')) }))
+    .map(it => ({ it, title: norm(it.title), all: norm([it.title, it.body, it.parent?.title, epicKey(it) !== NO_EPIC ? epicTitle(epicKey(it)) : ''].join(' ')) }))
     .filter(x => words.every(w => x.all.includes(w)))
     .sort((a, b) => (words.every(w => b.title.includes(w)) - words.every(w => a.title.includes(w))) || ((a.it.status === doneId) - (b.it.status === doneId)))
     .map(x => x.it);
@@ -1333,7 +1468,7 @@ function highlight(text, q) {
 }
 
 function openSearch() {
-  const input = h('input', { type: 'search', name: 'q', class: 'search-input', 'aria-label': 'Поиск задач', autocomplete: 'off', placeholder: 'Название, описание, эпик…', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+  const input = h('input', { type: 'search', name: 'q', class: 'search-input', 'aria-label': 'Поиск задач', autocomplete: 'off', placeholder: 'Название, описание, проект…', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
   const results = h('div', { class: 'search-results' });
   const doneId = doneStatus()?.id;
   const draw = () => {
@@ -1349,7 +1484,7 @@ function openSearch() {
             h('span', { class: 'sr-title' }, highlight(it.title, q)),
             h('span', { class: 'lr-hint' },
               h('span', { class: 'dot', style: `--c:${st ? optionColor(st.color) : 'transparent'}` }), st?.name ?? 'Без статуса',
-              it.parent ? [h('span', { class: 'sep', text: '·' }), swatch(it.parent.id), it.parent.title] : null)),
+              epicKey(it) !== NO_EPIC ? [h('span', { class: 'sep', text: '·' }), swatch(epicKey(it)), epicTitle(epicKey(it))] : null)),
           h('span', { class: 'rchev' }, icon('chevron', 18)));
       })) : null);
   };

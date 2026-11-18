@@ -83,14 +83,14 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
 
   await page.tap('#settingsBtn');
   await wait(300);
-  await page.tap('#sheet .list-row:has-text("Эпики")');
+  await page.tap('#sheet .list-row:has-text("Проекты")');
   await wait(300);
-  await page.fill('#sheet .inline-add input', 'Тестовый эпик');
+  await page.fill('#sheet .inline-add input', 'Тестовый проект');
   await page.tap('#sheet .inline-add button');
   await wait(900);
   const epicList = await page.$$eval('#sheet .list-row .lr-title', r => r.map(x => x.textContent));
-  check('new epic created and listed', epicList.includes('Тестовый эпик'), epicList.join(' | '));
-  check('epic created with epic label', (await calls()).some(c => c.q.includes('labelIds') && JSON.stringify(c.variables.l) === '["L1"]'));
+  check('new epic created and listed', epicList.includes('Тестовый проект'), epicList.join(' | '));
+  check('project created as new field option', (await calls()).some(c => c.q.includes('updateProjectV2Field(') && c.variables.f === 'PF' && c.variables.o.some(o => !o.id && o.name === 'Тестовый проект') && c.variables.o.filter(o => o.id).length === 3));
   await page.screenshot({ path: `${OUT}/f1-epics.png` });
 
   await page.tap('#sheet .list-row:has-text("Дом")');
@@ -100,24 +100,24 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await page.tap('#sheet label.pick-row:has-text("Почистить телефон")');
   const btnText = await page.textContent('#sheet .btn.primary.wide');
   check('selection counter', btnText.includes('2'), btnText);
-  await page.tap('#sheet .chip:has-text("Тестовый эпик")');
+  await page.tap('#sheet .chip:has-text("Тестовый проект")');
   await page.screenshot({ path: `${OUT}/f2-epic.png` });
   await page.tap('#sheet .btn.primary.wide');
   await wait(900);
   const g2 = await groups();
-  const moved = g2.find(([g]) => g === 'Тестовый эпик');
+  const moved = g2.find(([g]) => g === 'Тестовый проект');
   check('bulk move puts 2 tasks into new epic', moved && moved[1].length === 2, JSON.stringify(moved));
-  const bulk = (await calls()).filter(c => c.q.includes('addSubIssue')).at(-1);
-  check('bulk move is one aliased request', bulk && bulk.q.includes('m0: addSubIssue') && bulk.q.includes('m1'), bulk?.q);
+  const bulk = (await calls()).filter(c => c.q.includes('m0: updateProjectV2ItemFieldValue')).at(-1);
+  check('bulk move is one aliased request', bulk && bulk.q.includes('m1: updateProjectV2ItemFieldValue') && bulk.q.includes('"PF"'), bulk?.q);
 
-  await page.tap('.group:has(.gt:text-is("Тестовый эпик")) .gh-more');
+  await page.tap('.group:has(.gt:text-is("Тестовый проект")) .gh-more');
   await wait(300);
-  await page.fill('#sheet textarea.t-title', 'Эпик переименован');
+  await page.fill('#sheet textarea.t-title', 'Проект переименован');
   await closeByBackdrop();
   await wait(700);
   const g3 = await groups();
-  check('rename epic updates group title', g3.some(([g]) => g === 'Эпик переименован'), g3.map(g => g[0]).join(' | '));
-  check('rename sent', (await calls()).some(c => c.q.includes('updateIssue') && c.variables.t === 'Эпик переименован'));
+  check('rename epic updates group title', g3.some(([g]) => g === 'Проект переименован'), g3.map(g => g[0]).join(' | '));
+  check('rename sent as field option update', (await calls()).some(c => c.q.includes('updateProjectV2Field(') && c.variables.o.some(o => o.id && o.name === 'Проект переименован')));
 
   await page.tap('#settingsBtn');
   await wait(300);

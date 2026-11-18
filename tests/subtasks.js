@@ -1,0 +1,81 @@
+const { chromium, devices } = require('playwright-core');
+const OUT = process.env.OUT || require('path').join(__dirname, 'out');
+const BASE = process.env.BASE || 'http://localhost:8787/';
+const results = [];
+const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${extra ? ' — ' + extra : ''}`);
+
+(async () => {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ ...devices['iPhone 13'], colorScheme: 'dark' });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('dialog', d => d.accept());
+  const wait = ms => page.waitForTimeout(ms);
+  const calls = () => page.evaluate(() => window.__calls);
+  const titles = () => page.$$eval('.rtt', r => r.map(x => x.textContent));
+  await page.goto(BASE);
+  await page.waitForSelector('.row');
+
+  check('parent row shows subtask progress', (await page.$eval('.row:has-text("Оплатить налоги") .prog', e => e.textContent)) === '1/3');
+  await page.tap('.row:has-text("Оплатить налоги")');
+  await wait(900);
+  check('card loads subtasks from GitHub', (await page.$$eval('#sheet .sub-row', r => r.length)) === 3);
+  check('card shows progress header', /1 из 3/.test(await page.textContent('#sheet .sub-head')));
+  await page.screenshot({ path: `${OUT}/s1-subtasks.png` });
+  await page.tap('#sheet .sub-row:has-text("Подзадача два") .sub-check');
+  await wait(700);
+  check('toggle subtask closes the issue', (await calls()).some(c => c.q.includes('closeIssue') && c.variables.i === 'S2'));
+  check('progress updates after toggle', /2 из 3/.test(await page.textContent('#sheet .sub-head')));
+  await page.fill('#sheet .sub-add input', 'Новая подзадача');
+  await page.tap('#sheet .sub-add .btn');
+  await wait(900);
+  const sub = (await calls()).find(c => c.q.includes('createIssue(') && c.variables.t === 'Новая подзадача');
+  check('subtask created under parent, not on board', sub && sub.variables.par === 'I1' && !sub.q.includes('projectV2Ids'), JSON.stringify(sub?.variables));
+  check('subtask listed in card', (await page.$$eval('#sheet .sub-row', r => r.length)) === 4);
+  await page.evaluate(() => closeSheet());
+  await wait(400);
+  check('subtasks never appear on the board', !(await titles()).some(t => t.startsWith('Подзадача') || t === 'Новая подзадача'));
+  check('row progress reflects changes', (await page.$eval('.row:has-text("Оплатить налоги") .prog', e => e.textContent)) === '2/4');
+
+  await page.tap('.row:has-text("Собрать отчёт")');
+  await wait(700);
+  const splitText = await page.textContent('#sheet .split-btn');
+  check('split button counts bullet points', /· 3/.test(splitText), splitText);
+  await page.tap('#sheet .split-btn');
+  await wait(1500);
+  const splits = (await calls()).filter(c => c.q.includes('createIssue(') && !c.q.includes('projectV2Ids') && c.variables.par === 'I2').map(c => c.variables.t);
+  check('split creates one subtask per bullet', splits.join('|') === 'Первый пункт|Второй пункт|Третий пункт', splits.join('|'));
+  check('bullets removed from description', (await page.inputValue('#sheet textarea[aria-label="Заметки"]')) === 'План:');
+  await page.evaluate(() => closeSheet());
+  await wait(800);
+  check('description saved without bullets', (await calls()).some(c => c.q.includes('updateIssue') && c.variables.b === 'План:'));
+
+  await page.tap('.row:has-text("Помыть окна")');
+  await wait(500);
+  await page.tap('#sheet .chip-line:has-text("Проект") .chip:has-text("Проект Альфа")');
+  await wait(700);
+  check('changing project sets the field', (await calls()).some(c => c.q.includes('updateProjectV2ItemFieldValue') && c.variables.f === 'PF' && c.variables.o === 'E2'));
+  await page.tap('#sheet .chip-line:has-text("Проект") .chip:has-text("Без проекта")');
+  await wait(700);
+  check('no project clears the field', (await calls()).some(c => c.q.includes('clearProjectV2ItemFieldValue') && c.variables.f === 'PF'));
+  await page.evaluate(() => closeSheet());
+
+  const ctx2 = await browser.newContext({ ...devices['iPhone 13'] });
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', e => errors.push(e.message));
+  await p2.addInitScript(() => localStorage.setItem('mock.noProjectField', '1'));
+  await p2.goto(BASE);
+  await p2.waitForSelector('.row');
+  await p2.tap('#settingsBtn'); await p2.waitForTimeout(300);
+  await p2.tap('#sheet .list-row:has-text("Проекты")'); await p2.waitForTimeout(300);
+  await p2.fill('#sheet .inline-add input', 'Первый проект');
+  await p2.tap('#sheet .inline-add button');
+  await p2.waitForTimeout(900);
+  check('first project creates the field on the board', (await p2.evaluate(() => window.__calls)).some(c => c.q.includes('createProjectV2Field') && c.variables.n === 'Проект' && c.variables.o[0].name === 'Первый проект'));
+
+  check('no page errors', errors.length === 0, errors.join('; '));
+  console.log(results.join('\n'));
+  await browser.close();
+  process.exit(results.some(r => r.startsWith('FAIL')) ? 1 : 0);
+})().catch(e => { console.log(results.join('\n')); console.error(e); process.exit(1); });

@@ -153,7 +153,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await page.screenshot({ path: `${OUT}/g5-flat.png` });
   await page.tap('#groupBtn');
   await page.waitForTimeout(300);
-  await page.tap('#sheet .list-row:has-text("с эпиками")');
+  await page.tap('#sheet .list-row:has-text("с проектами")');
   await page.waitForTimeout(300);
   check('grouping back on', (await page.$$('.group-head')).length > 0);
 

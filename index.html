@@ -181,6 +181,36 @@ textarea:focus,input:focus,select:focus{border-color:var(--accent)}
 .link-btn{border:0;background:transparent;color:var(--accent);font-size:16px;font-weight:600;min-height:44px;padding:0 4px}
 .quick{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;margin-top:14px}
 .task .chip-line{margin-top:12px}
+.rp{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);margin-top:3px;min-width:0}
+.rp .ico{opacity:.8}
+.prog{flex:none;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted);border:1px solid var(--border);border-radius:10px;padding:2px 7px}
+.prog.full{color:var(--green);border-color:var(--green)}
+.parent-link{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--accent);font-size:14px;padding:6px 4px;min-height:36px;text-align:left;max-width:100%}
+.parent-link span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.parent-link:disabled{color:var(--muted)}
+.project-head{display:flex;align-items:center;gap:4px}
+.project-head .t-title{flex:1}
+.subtasks{margin-top:4px}
+.subs{margin-bottom:8px}
+.subs[hidden]{display:none}
+.sub-row{display:flex;align-items:center;gap:2px;border-bottom:.5px solid var(--border);min-height:48px;padding-left:4px}
+.sub-row:last-child{border-bottom:0}
+.sub-check{flex:none;width:44px;height:44px;border:0;background:transparent;display:grid;place-items:center;color:#fff;position:relative}
+.sub-check::before{content:"";position:absolute;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--muted)}
+.sub-row.done .sub-check::before{background:var(--green-fill);border-color:var(--green-fill)}
+.sub-check .ico{position:relative}
+.sub-title{flex:1;min-width:0;border:0;background:transparent;text-align:left;font-size:16px;padding:12px 12px 12px 2px;word-break:break-word;color:var(--text);text-decoration:none}
+.sub-row.pending .sub-title{opacity:.6}
+.sub-note{margin:0 4px 8px}
+.sub-note[hidden]{display:none}
+.sub-row.done .sub-title{color:var(--muted);text-decoration:line-through}
+.sub-add .btn{width:48px;padding:0;flex:none}
+.sub-head[hidden],.sub-add[hidden],.sub-open[hidden]{display:none}
+.sub-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.sub-actions:empty{display:none}
+.sub-open{display:inline-flex;align-items:center;gap:6px;font-size:15px}
+.split-btn{width:auto;margin-top:0;min-height:40px;font-size:14px;padding:0 12px}
+.split-btn[hidden]{display:none}
 .task .quick+.chip-line{margin-top:16px}
 .quick.one{grid-template-columns:1fr}
 .qa{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:64px;border:1px solid var(--border);background:var(--surface2);border-radius:14px;font-size:14px;font-weight:600;color:var(--text);padding:8px}

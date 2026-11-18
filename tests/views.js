@@ -30,18 +30,18 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   await page.keyboard.type('Компактная задача');
   await page.tap('#sheet .add-btn');
   await wait(1000);
-  const created = (await page.evaluate(() => window.__calls)).find(c => c.q.includes('createIssue(') && c.variables.t === 'Компактная задача');
-  check('create from compact sheet with chosen epic', created && JSON.stringify(created.variables).includes('E2'), JSON.stringify(created?.variables));
+  const placed = (await page.evaluate(() => window.__calls)).find(c => c.q.includes('j:updateProjectV2ItemFieldValue') && c.variables.setProj);
+  check('create from compact sheet sets chosen project', placed && placed.variables.po === 'E2' && placed.variables.pf === 'PF', JSON.stringify(placed?.variables));
   await page.tap('#sheetWrap', { position: { x: 30, y: 30 } });
   await wait(300);
 
   await page.tap('#groupBtn');
   await wait(300);
   await page.screenshot({ path: `${OUT}/c2-view.png` });
-  await page.tap('#sheet .list-row:has-text("Вкладки — эпики")');
+  await page.tap('#sheet .list-row:has-text("Вкладки — проекты")');
   await wait(300);
   const tabs = await page.$$eval('.tab', ts => ts.map(t => t.textContent));
-  check('epic view: tabs are epics', tabs.some(t => t.startsWith('Дом')) && tabs.some(t => t.startsWith('Без эпика')), tabs.join(' | '));
+  check('epic view: tabs are epics', tabs.some(t => t.startsWith('Дом')) && tabs.some(t => t.startsWith('Без проекта')), tabs.join(' | '));
   await page.tap('.tab:has-text("Дом")');
   await wait(300);
   const sec = await page.$$eval('.group', gs => gs.map(g => [g.querySelector('.gt').textContent, g.classList.contains('collapsed'), g.querySelectorAll('.rtt').length]));
@@ -64,7 +64,7 @@ const check = (name, ok, extra = '') => results.push(`${ok ? 'PASS' : 'FAIL'} ${
   check('view persisted', await page.evaluate(() => localStorage.getItem('pb.view') === '"epic"'));
 
   await page.tap('#groupBtn'); await wait(300);
-  await page.tap('#sheet .list-row:has-text("с эпиками")'); await wait(300);
+  await page.tap('#sheet .list-row:has-text("с проектами")'); await wait(300);
   await page.tap('.tab:has-text("ToDo")'); await wait(300);
   await page.tap('.group:has(.gt:text-is("Проект Альфа")) .gh-more'); await wait(300);
   await page.tap('#sheet button:has-text("Показать все задачи списком")'); await wait(300);
